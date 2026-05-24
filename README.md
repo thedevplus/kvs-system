@@ -1,141 +1,53 @@
-# Log-Structured Key-Value Store
+# kvs (`thedevplus`)
 
-[![Rust](https://img.shields.io/badge/Rust-1.70+-orange.svg)](https://www.rust-lang.org)
+A log-structured key-value store implemented in Rust.
+
+[![Rust](https://img.shields.io/badge/Rust-1.95+-orange.svg)](https://www.rust-lang.org)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-> A high-performance, log-structured key-value store implemented in pure Rust,
-> inspired by the Bitcask paper and built as part of the
-> [Talent Plan](https://github.com/pingcap/talent-plan) Rust track.
+> Designed and implemented based on the industrial-grade technical specifications and test suites of the [PingCAP Talent Plan](https://github.com/pingcap/talent-plan) (Practical Networked Applications in Rust).
+
+---
+
+## Overview
+
+This project implements a log-structured key-value store inspired by the Bitcask design pattern. It demonstrates core systems programming concepts in Rust.
 
 ## Features
 
-- **Log-Structured Storage** - Append-only write optimization for sequential I/O
-- **Automatic Compaction** - Background garbage collection to reclaim disk space
-- **O(1) Read** - In-memory index via HashMap for fast key lookups
-- **Crash Recovery** - Durable writes with fsync semantics
-- **Clean Error Handling** - Idiomatic `Result<T, E>` pattern with custom error types
+- **Append-only Log**: Sequential writes for optimal I/O performance
+- **In-memory Index**: O(1) read complexity via HashMap
+- **Automatic Compaction**: Background garbage collection
+- **CLI Interface**: Interactive command-line tool
 
-## Architecture
+## Project Roadmap & Progression
 
-### Write Path
+- [x] **Milestone 1**: In-memory prototype with `clap` CLI parser.
+- [x] **Milestone 2**: Log-structured engine (Bitcask pattern) with compaction. *(Fully implemented in one sprint; 100% tests passed)*
+- [ ] **Milestone 3**: Custom TCP networking stack (Handling sticky/half packets) — *In Progress*
+- [ ] **Milestone 4**: Thread-pool concurrency engine (`Send + Sync` optimization).
+- [ ] **Milestone 5**: Full asynchronous migration via Tokio runtime.
 
-```
-set("key", "value")
-        │
-        ▼
-┌───────────────────┐
-│  Serialize Log    │  serde_json → binary
-└────────┬──────────┘
-         │
-         ▼
-┌───────────────────┐
-│  Append to Log    │  O(1) sequential write
-└────────┬──────────┘
-         │
-         ▼
-┌───────────────────┐
-│  Update Index     │  HashMap[key] = pointer
-└───────────────────┘
-```
-
-### Read Path
-
-```
-get("key")
-        │
-        ▼
-┌───────────────────┐
-│  Lookup Index     │  HashMap.get(key) → Pointer
-└────────┬──────────┘
-         │
-         ▼
-┌───────────────────┐
-│  Seek & Read      │  File.seek(pos).read(sz)
-└───────────────────┘
-```
-
-## Quick Start
-
-### Rust API
+## Usage
 
 ```rust
 use kvs::KvStore;
 
-let mut store = KvStore::open("./data")?;
-store.set("name".to_string(), "Alice".to_string())?;
-
-if let Some(value) = store.get("name".to_string())? {
-    println!("Found: {}", value);
-}
-
-store.remove("name".to_string())?;
+let mut store = KvStore::open("./folder")?;
+store.set("key".to_string(), "value".to_string())?;
+let value = store.get("key".to_string())?;
 ```
-
-### CLI
 
 ```bash
-# Set a key-value pair
-cargo run --bin kvs -- set name Alice
-
-# Get a value by key
-cargo run --bin kvs -- get name
-
-# Remove a key
-cargo run --bin kvs -- rm name
+kvs set key value
+kvs get key
+kvs rm key
 ```
 
-## Key Design Decisions
+## Ongoing Optimizations
 
-| Decision | Trade-off | Rationale |
-|----------|-----------|-----------|
-| Append-only log | Write amplification during compaction | Maximize read performance |
-| In-memory index | Memory bounded by key count | O(1) lookup, fast startup |
-| JSON serialization | Human readable, not optimal space | Simplicity for learning |
-| Bitcask-style compaction | Background I/O overhead | Keeps active data compact |
-
-## What I Learned
-
-- **Rust Ownership Model** - Lifetimes, borrowing, zero-cost abstractions
-- **Error Handling** - `Result<T, E>` pattern, custom error types with `thiserror`
-- **Serialization** - `serde` derive macros, performance considerations
-- **File I/O** - `BufReader`/`BufWriter`, `Seek` semantics
-- **System Design** - Log-structured storage, compaction strategies
-- **Testing** - Unit tests, integration tests, tempfile for test isolation
-
-## Project Structure
-
-```
-kvs/
-├── src/
-│   ├── lib.rs           # Core key-value store implementation
-│   ├── error.rs         # Custom error types
-│   └── bin/kvs.rs       # CLI entry point
-├── tests/
-│   └── tests.rs         # Integration tests
-├── Cargo.toml
-└── README.md
-```
-
-## Testing
-
-```bash
-# Run all tests (unit + integration)
-cargo test
-
-# Run with output
-cargo test -- --nocapture
-
-# Run clippy for code quality
-cargo clippy
-
-# Format code
-cargo fmt
-```
-
-## Related Projects
-
-- [pingcap/talent-plan](https://github.com/pingcap/talent-plan) - Original course that inspired this project
-- [Bitcask - A Log-Structured Hash Table for Fast Key/Value Data](https://riak.com/assets/bitcask-intro.pdf) - Paper that inspired the design
+- **Error Handling**: Improving error handling and consistency.
+- **Documentation**: Expanding inline rustdoc comments for core APIs.
 
 ## License
 
