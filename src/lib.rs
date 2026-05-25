@@ -1,3 +1,14 @@
+//! # kvs
+//!
+//! A log-structured key-value store inspired by the Bitcask paper.
+//!
+//! # Features
+//!
+//! - Append-only log for sequential I/O performance
+//! - In-memory HashMap index for O(1) lookups
+//! - Automatic compaction for garbage collection
+//! - Crash recovery with durable writes
+
 use crate::error::KvError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -10,9 +21,13 @@ pub use crate::error::Result;
 
 pub mod error;
 
+/// Directory name for storing log files
 const LOG_FILE_DIR: &str = "database";
+/// File extension for log files
 const LOG_FILE_EXT: &str = "log";
+/// Maximum size per log file
 const LOG_FILE_SIZE: u64 = 1024 * 1024;
+/// Threshold for triggering compaction
 const LOG_UNCOMPACT: u64 = 1000;
 
 pub struct KvStore {
@@ -46,6 +61,10 @@ struct KvLog {
 }
 
 impl KvStore {
+    /// Sets a key-value pair in the store.
+    ///
+    /// If the key already exists, the value will be updated.
+    /// Triggers compaction when the uncompact count exceeds the threshold.
     pub fn set(&mut self, key: String, value: String) -> Result<()> {
         let kv_log = KvLog::build_from(KvCommand::Set, key.clone(), Some(value));
         self.write_log(&kv_log)?;
@@ -53,6 +72,9 @@ impl KvStore {
         self.start_compact()
     }
 
+    /// Gets the value associated with the given key.
+    ///
+    /// Returns `Some(value)` if the key exists, `None` otherwise.
     pub fn get(&mut self, key: String) -> Result<Option<String>> {
         if self.flag {
             self.buffer.flush()?;
@@ -60,7 +82,6 @@ impl KvStore {
         }
         match self.read_log(&key) {
             Ok(log) => {
-                //io::stdout().write_all(v.as_bytes())?;
                 println!("{}", log.value.as_ref().unwrap());
                 Ok(log.value)
             }
@@ -71,6 +92,9 @@ impl KvStore {
         }
     }
 
+    /// Removes the key-value pair associated with the given key.
+    ///
+    /// Returns an error if the key does not exist.
     pub fn remove(&mut self, key: String) -> Result<()> {
         if self.map.contains_key(&key) {
             let kv_log = KvLog::build_from(KvCommand::Remove, key.clone(), None);
@@ -83,6 +107,10 @@ impl KvStore {
         }
     }
 
+    /// Opens or creates a key-value store at the given path.
+    ///
+    /// Creates the database directory and log files if they do not exist.
+    /// Builds the in-memory index from existing log files on startup.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let mut path = path.into();
         path.push(LOG_FILE_DIR);
