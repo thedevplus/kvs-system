@@ -103,7 +103,7 @@ impl KvStore {
             self.start_compact()
         } else {
             println!("Key not found");
-            Err(KvError::Other)
+            Err(KvError::LogError)
         }
     }
 
@@ -160,7 +160,7 @@ impl KvStore {
 
     fn read_log(&self, key: &String) -> Result<KvLog> {
         let Some(p) = self.map.get(key) else {
-            return Err(KvError::Other);
+            return Err(KvError::LogError);
         };
         let mut file = BufReader::new(File::open(number_convert_to_log_path(&self.path, p.log))?);
         let mut data = vec![0u8; p.sz as usize];
@@ -198,9 +198,9 @@ impl KvStore {
             let entry = entry.path();
             let file = entry
                 .file_prefix()
-                .ok_or(KvError::Other)?
+                .ok_or(KvError::FileError)?
                 .to_str()
-                .ok_or(KvError::Other)?;
+                .ok_or(KvError::FileError)?;
             if !(file.contains("._") || file.contains(".DS_")) {
                 dir_files.push((file.parse().unwrap(), entry));
             }
