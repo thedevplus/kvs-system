@@ -1,8 +1,6 @@
 use std::io;
 use thiserror::Error;
 
-pub type Result<T> = std::result::Result<T, KvError>;
-
 #[derive(Error, Debug)]
 pub enum KvError {
     #[error("Serialization error: {0}")]
