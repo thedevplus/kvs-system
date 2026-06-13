@@ -1,8 +1,8 @@
 use crate::error::KvError;
 
-mod kvs;
 mod engine;
 mod error;
+mod kvs;
 
 pub type Result<T> = std::result::Result<T, KvError>;
 

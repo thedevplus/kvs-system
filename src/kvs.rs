@@ -9,8 +9,8 @@
 //! - Automatic compaction for garbage collection
 //! - Crash recovery with durable writes
 
-use crate::engine::KvsEngine;
 use crate::Result;
+use crate::engine::KvsEngine;
 use crate::error::KvError;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
@@ -107,7 +107,6 @@ impl KvsEngine for KvStore {
 }
 
 impl KvStore {
-
     /// Opens or creates a key-value store at the given path.
     ///
     /// Creates the database directory and log files if they do not exist.

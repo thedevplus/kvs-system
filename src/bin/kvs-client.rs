@@ -1,5 +1,5 @@
 use clap::Parser;
-use kvs::{Result, KvStore, KvsEngine};
+use kvs::{KvStore, KvsEngine, Result};
 use std::{env, process};
 
 #[derive(Parser)]
