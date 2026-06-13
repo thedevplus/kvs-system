@@ -1,48 +1,61 @@
-use clap::Parser;
+use clap::{Parser, ValueEnum};
 use kvs::{KvStore, KvsEngine, Result};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::{env, process};
 
 #[derive(Parser)]
-#[command(version)]
+#[command(version, name="kvs client", about = "A key-value store client", long_about = None)]
 struct Args {
-    command: Option<String>,
-    key: Option<String>,
+    /// Command to execute
+    command: Cmd,
+    /// Key to operate on
+    key: String,
+    /// Value to set (required for set command)
     value: Option<String>,
+    /// Server address to connect to
+    #[arg(long, default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 4000))]
+    addr: SocketAddr,
+}
+
+#[derive(Clone, ValueEnum)]
+enum Cmd {
+    Set,
+    Get,
+    Rm,
 }
 
 fn main() -> Result<()> {
     let args = Args::parse();
     let mut kvs = KvStore::open(&env::current_dir()?)?;
 
-    match args.command.unwrap().as_ref() {
-        "-V" => println!("{}", env!("CARGO_PKG_VERSION")),
-        "set" => {
+    match args.command {
+        // "-V" => println!("{}", env!("CARGO_PKG_VERSION")),
+        Cmd::Set => {
             if let Some(value) = args.value {
-                kvs.set(args.key.unwrap(), value)?;
+                kvs.set(args.key, value)?;
             } else {
                 process::exit(1);
             }
         }
-        "get" => {
+        Cmd::Get => {
             if args.value.is_some() {
                 process::exit(1);
                 //return Err(kvs::error::KvError::Other);
             } else {
-                let Ok(Some(_)) = kvs.get(args.key.unwrap()) else {
+                let Ok(Some(_)) = kvs.get(args.key) else {
                     process::exit(0);
                 };
             }
         }
-        "rm" => {
+        Cmd::Rm => {
             if args.value.is_some() {
                 process::exit(1);
             } else {
-                let Ok(_) = kvs.remove(args.key.unwrap()) else {
+                let Ok(_) = kvs.remove(args.key) else {
                     process::exit(1);
                 };
             }
         }
-        _ => process::exit(1),
     }
 
     Ok(())
