@@ -3,12 +3,12 @@ use kvs::Result;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 
 #[derive(Parser)]
-#[command(version, name="kvs server", about = "The server for key/value storage", long_about = None)]
+#[command(version, name="kvs server", about = "A key-value store server", long_about = None)]
 struct Args {
-    /// Listen to IPv4 or IPv6 with a custom port
+    /// Socket address to listen on
     #[arg(long, default_value_t = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 4000))]
     addr: SocketAddr,
-    /// Choose kvs or sled engine to run
+    /// Storage engine to use (kvs or sled)
     #[arg(long)]
     engine: Option<Engine>,
 }
