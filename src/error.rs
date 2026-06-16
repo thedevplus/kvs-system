@@ -1,6 +1,6 @@
+use log::SetLoggerError;
 use std::io;
 use thiserror::Error;
-use log::SetLoggerError;
 
 #[derive(Error, Debug)]
 pub enum KvError {

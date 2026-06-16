@@ -18,6 +18,7 @@ use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::time::SystemTime;
+use clap::ValueEnum;
 
 /// Directory name for storing log files
 const LOG_FILE_DIR: &str = "database";
@@ -37,10 +38,19 @@ pub struct KvStore {
     flag: bool,
 }
 
-#[derive(Copy, Clone, Deserialize, Serialize, Debug)]
-enum KvCommand {
+#[derive(Copy, Clone, Deserialize, Serialize, Debug, ValueEnum)]
+pub enum KvCommand {
     Set,
-    Remove,
+    Get,
+    Rm,
+}
+
+#[derive(Deserialize, Serialize, Clone, Debug)]
+struct KvLog {
+    pub command: KvCommand,
+    time: SystemTime,
+    pub key: String,
+    pub value: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize, Debug)]
@@ -48,14 +58,6 @@ struct KvPointer {
     log: u64,
     pos: u64,
     sz: u64,
-}
-
-#[derive(Deserialize, Serialize, Clone, Debug)]
-struct KvLog {
-    command: KvCommand,
-    time: SystemTime,
-    key: String,
-    value: Option<String>,
 }
 
 impl KvsEngine for KvStore {
@@ -95,7 +97,7 @@ impl KvsEngine for KvStore {
     /// Returns an error if the key does not exist.
     fn remove(&mut self, key: String) -> Result<()> {
         if self.map.contains_key(&key) {
-            let kv_log = KvLog::build_from(KvCommand::Remove, key.clone(), None);
+            let kv_log = KvLog::build_from(KvCommand::Rm, key.clone(), None);
             self.write_log(&kv_log)?;
             self.delete_index(key)?;
             self.start_compact()

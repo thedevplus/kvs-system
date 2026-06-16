@@ -1,13 +1,14 @@
-use clap::{Parser, ValueEnum};
+use clap::Parser;
 use kvs::{KvStore, KvsEngine, Result};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::{env, process};
+use std::process;
+use kvs::kvs::KvCommand;
 
 #[derive(Parser)]
 #[command(version, name="kvs client", about = "A key-value store client", long_about = None)]
 struct Args {
     /// Command to execute
-    command: Cmd,
+    command: KvCommand,
     /// Key to operate on
     key: String,
     /// Value to set (required for set command)
@@ -17,27 +18,19 @@ struct Args {
     addr: SocketAddr,
 }
 
-#[derive(Clone, ValueEnum)]
-enum Cmd {
-    Set,
-    Get,
-    Rm,
-}
-
 fn main() -> Result<()> {
     let args = Args::parse();
-    let mut kvs = KvStore::open(&env::current_dir()?)?;
+    let mut kvs = KvStore::open("./databse")?;
 
     match args.command {
-        // "-V" => println!("{}", env!("CARGO_PKG_VERSION")),
-        Cmd::Set => {
+        KvCommand::Set => {
             if let Some(value) = args.value {
                 kvs.set(args.key, value)?;
             } else {
                 process::exit(1);
             }
         }
-        Cmd::Get => {
+        KvCommand::Get => {
             if args.value.is_some() {
                 process::exit(1);
                 //return Err(kvs::error::KvError::Other);
@@ -47,7 +40,7 @@ fn main() -> Result<()> {
                 };
             }
         }
-        Cmd::Rm => {
+        KvCommand::Rm => {
             if args.value.is_some() {
                 process::exit(1);
             } else {
