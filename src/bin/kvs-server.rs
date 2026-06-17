@@ -1,7 +1,7 @@
 use clap::{Parser, ValueEnum};
-use kvs::Result;
-use log::{Level, LevelFilter, Log, Metadata, Record, debug};
+use kvs::{Result, logger};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
+use log::debug;
 
 #[derive(Parser)]
 #[command(version, name="kvs server", about = "A key-value store server", long_about = None)]
@@ -20,31 +20,8 @@ enum Engine {
     Sled,
 }
 
-struct SimpleLog;
-
-impl Log for SimpleLog {
-    fn enabled(&self, metadata: &Metadata) -> bool {
-        metadata.level() <= Level::Debug
-    }
-
-    fn log(&self, record: &Record) {
-        if self.enabled(record.metadata()) {
-            println!("{} - {}", record.level(), record.args())
-        }
-    }
-
-    fn flush(&self) {}
-}
-
-static LOGGER: SimpleLog = SimpleLog;
-
-fn init() -> Result<()> {
-    log::set_logger(&LOGGER).map(|()| log::set_max_level(LevelFilter::Debug))?;
-    Ok(())
-}
-
 fn main() -> Result<()> {
-    init()?;
+    logger::init()?;
     let args = Args::parse();
     debug!(
         "version: {}, address: {}, engine: {}",
