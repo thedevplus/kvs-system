@@ -12,13 +12,14 @@
 use crate::Result;
 use crate::engine::KvsEngine;
 use crate::error::KvError;
+use clap::ValueEnum;
+use log::debug;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::time::SystemTime;
-use clap::ValueEnum;
 
 /// Directory name for storing log files
 const LOG_FILE_DIR: &str = "database";
@@ -116,6 +117,7 @@ impl KvStore {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let mut path = path.into();
         path.push(LOG_FILE_DIR);
+        debug!("Initialize path ok.");
         directory_initial(&path)?;
         let mut kvs = Self {
             buffer: BufWriter::new(
@@ -130,12 +132,14 @@ impl KvStore {
             uncompact: 0,
             flag: false,
         };
+        debug!("Initialize file ok.");
         kvs.map = kvs.start_build_index()?;
         kvs.buffer = BufWriter::new(
             OpenOptions::new()
                 .append(true)
                 .open(number_convert_to_log_path(&path, kvs.active.log))?,
         );
+        debug!("Open pointer file ok.");
         Ok(kvs)
     }
 
@@ -331,6 +335,7 @@ fn get_size(log: &KvLog) -> u64 {
 fn directory_initial(dir: &PathBuf) -> Result<()> {
     if !dir.is_dir() {
         DirBuilder::new().create(dir)?;
+        debug!("Creation path ok.");
         File::create(number_convert_to_log_path(dir, 0))?;
     }
     Ok(())
