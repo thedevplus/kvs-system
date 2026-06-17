@@ -1,17 +1,16 @@
-use log::SetLoggerError;
 use std::io;
 use thiserror::Error;
 
 #[derive(Error, Debug)]
 pub enum KvError {
     #[error("Serialization error: {0}")]
-    SerdeError(#[from] serde_json::Error),
+    Serde(#[from] serde_json::Error),
     #[error("I/O error: {0}")]
-    IoError(#[from] io::Error),
+    Io(#[from] io::Error),
     #[error("Logger error: {0}")]
-    LoggerError(#[from] SetLoggerError),
+    Logger(#[from] log::SetLoggerError),
     #[error("Failed to write to or remove log")]
-    LogError,
+    Log,
     #[error("Failed to open file or get file path")]
-    FileError,
+    File,
 }
