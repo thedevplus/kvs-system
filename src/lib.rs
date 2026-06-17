@@ -1,10 +1,10 @@
 use crate::error::KvError;
 
 mod engine;
-mod error;
+pub mod error;
 pub mod kvs;
-pub mod protocol;
 pub mod logger;
+pub mod protocol;
 
 pub type Result<T> = std::result::Result<T, KvError>;
 
