@@ -50,7 +50,7 @@ impl Serialize for KvStream {
                 stream + self.key.as_ref()
             }
         };
-        serializer.serialize_bytes(stream.as_bytes())
+        serializer.serialize_str(&stream)
     }
 }
 
@@ -66,14 +66,14 @@ impl<'de> Visitor<'de> for DeStream {
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(formatter, "Need a vector of u8 stream")
     }
-    fn visit_bytes<E>(self, v: &[u8]) -> std::result::Result<Self::Value, E>
+    fn visit_str<E>(self, v: &str) -> std::result::Result<Self::Value, E>
     where
         E: serde::de::Error,
     {
         debug!("Inside visitor parse before");
-        let stream = String::from_utf8_lossy(v).to_string();
-        debug!("{stream}");
-        let mut iter = stream.split("\t\t");
+        //let stream = String::from_utf8_lossy(v).to_string();
+        debug!("{v}");
+        let mut iter = v.split("\t\t");
         let mut kv_stream = KvStream::build_from(KvCommand::Get, String::from(""), None);
         if let Some(value) = iter.next() {
             match &value[0..1] {
@@ -110,6 +110,6 @@ impl<'de> Deserialize<'de> for KvStream {
         D: Deserializer<'de>,
     {
         debug!("Inside deserialize parse");
-        deserializer.deserialize_bytes(DeStream {})
+        deserializer.deserialize_str(DeStream {})
     }
 }

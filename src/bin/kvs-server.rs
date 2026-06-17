@@ -33,7 +33,7 @@ fn main() -> Result<()> {
     logger::init()?;
     let args = Args::parse();
     debug!(
-        "version: {}, address: {}, engine: {}",
+        "program: kvs-server, version: {}, address: {}, engine: {}",
         env!("CARGO_PKG_VERSION"),
         args.addr,
         match args.engine {
@@ -54,8 +54,9 @@ fn main() -> Result<()> {
         let mut tcp_stream = tcp_stream.try_clone()?;
         loop {
             if let Some(Ok(stream)) = iter.next() {
-                debug!("connetion created, status: {stream}");
-                if let Ok(kv_stream) = protocol::parse_protocol_stream(stream.as_bytes()) {
+                debug!("connetion created, status: {:?}", stream.as_bytes());
+                let v = stream.as_bytes().to_owned();
+                if let Ok(kv_stream) = protocol::parse_protocol_stream(&v) {
                     let stream = match kv_stream.command {
                         KvCommand::Set => {
                             if kvs

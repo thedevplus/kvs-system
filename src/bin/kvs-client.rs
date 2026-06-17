@@ -24,6 +24,11 @@ struct Args {
 fn main() -> Result<()> {
     logger::init()?;
     let args = Args::parse();
+    debug!(
+        "program: kvs-server, version: {}, address: {}",
+        env!("CARGO_PKG_VERSION"),
+        args.addr
+    );
 
     let mut tcp_stream = TcpStream::connect(args.addr)?;
 
