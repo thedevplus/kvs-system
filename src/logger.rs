@@ -1,5 +1,5 @@
-use log::{Level, LevelFilter, Log, Metadata, Record};
 use crate::Result;
+use log::{Level, LevelFilter, Log, Metadata, Record};
 
 struct SimpleLog;
 
