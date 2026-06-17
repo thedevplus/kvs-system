@@ -1,10 +1,11 @@
 use clap::Parser;
-use kvs::{Result, logger};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::process;
 use kvs::kvs::KvCommand;
 use kvs::protocol::{self, KvStream};
+use kvs::{Result, logger};
 use log::debug;
+use std::io::{BufRead, BufReader, Write};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
+use std::process;
 
 #[derive(Parser)]
 #[command(version, name="kvs client", about = "A key-value store client", long_about = None)]
@@ -24,10 +25,12 @@ fn main() -> Result<()> {
     logger::init()?;
     let args = Args::parse();
 
+    let mut tcp_stream = TcpStream::connect(args.addr)?;
+
     let stream = match args.command {
-        KvCommand::Set if let Some(value) = args.value => {
-            protocol::create_protocol_stream(&KvStream::build_from(args.command, args.key, Some(value)))
-        }
+        KvCommand::Set if let Some(value) = args.value => protocol::create_protocol_stream(
+            &KvStream::build_from(args.command, args.key, Some(value)),
+        ),
         KvCommand::Get | KvCommand::Rm if args.value.is_none() => {
             protocol::create_protocol_stream(&KvStream::build_from(args.command, args.key, None))
         }
@@ -35,6 +38,13 @@ fn main() -> Result<()> {
     }?;
 
     debug!("{stream:?}");
+    tcp_stream.write_all(&stream)?;
+    tcp_stream.write_all(b"\r\n")?;
+
+    let stream = BufReader::new(&tcp_stream);
+    if let Some(Ok(kv_stream)) = stream.lines().next() {
+        println!("{}",protocol::parse_protocol_stream(kv_stream.as_bytes())?.key);
+    }
 
     Ok(())
 }

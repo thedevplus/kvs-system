@@ -13,4 +13,6 @@ pub enum KvError {
     Log,
     #[error("Failed to open file or get file path")]
     File,
+    #[error("Network stream error")]
+    Network,
 }
