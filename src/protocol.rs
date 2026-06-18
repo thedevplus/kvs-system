@@ -55,7 +55,6 @@ impl Serialize for KvStream {
 }
 
 pub fn parse_protocol_stream(kv_stream: &[u8]) -> Result<KvStream> {
-    debug!("Inside parse function");
     Ok(serde_json::from_slice(kv_stream)?)
 }
 
@@ -70,9 +69,6 @@ impl<'de> Visitor<'de> for DeStream {
     where
         E: serde::de::Error,
     {
-        debug!("Inside visitor parse before");
-        //let stream = String::from_utf8_lossy(v).to_string();
-        debug!("{v}");
         let mut iter = v.split("\t\t");
         let mut kv_stream = KvStream::build_from(KvCommand::Get, String::from(""), None);
         if let Some(value) = iter.next() {
@@ -99,7 +95,6 @@ impl<'de> Visitor<'de> for DeStream {
                 _ => process::exit(1),
             }
         }
-        debug!("Inside visitor parse after");
         Ok(kv_stream)
     }
 }
@@ -109,7 +104,6 @@ impl<'de> Deserialize<'de> for KvStream {
     where
         D: Deserializer<'de>,
     {
-        debug!("Inside deserialize parse");
         deserializer.deserialize_str(DeStream {})
     }
 }

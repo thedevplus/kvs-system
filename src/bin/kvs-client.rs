@@ -48,7 +48,10 @@ fn main() -> Result<()> {
 
     let stream = BufReader::new(&tcp_stream);
     if let Some(Ok(kv_stream)) = stream.lines().next() {
-        println!("{}",protocol::parse_protocol_stream(kv_stream.as_bytes())?.key);
+        println!(
+            "{}",
+            protocol::parse_protocol_stream(kv_stream.as_bytes())?.key
+        );
     }
 
     Ok(())
