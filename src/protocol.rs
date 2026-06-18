@@ -1,6 +1,5 @@
 use crate::Result;
 use crate::kvs::KvCommand;
-use log::debug;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Visitor};
 use std::process;
 
