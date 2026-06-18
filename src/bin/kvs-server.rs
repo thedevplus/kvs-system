@@ -2,9 +2,8 @@ use clap::{Parser, ValueEnum};
 use kvs::error::KvError;
 use kvs::kvs::KvCommand;
 use kvs::protocol::KvStream;
-use kvs::{KvStore, KvsEngine, Result};
-use kvs::{logger, protocol};
-use log::{debug, info};
+use kvs::{KvStore, KvsEngine, Result, protocol};
+use log::{LevelFilter, debug, info};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::process;
@@ -27,7 +26,7 @@ enum Engine {
 }
 
 fn main() -> Result<()> {
-    logger::init()?;
+    stderrlog::new().verbosity(LevelFilter::Debug).init()?;
     let args = Args::parse();
     debug!(
         "program: kvs-server, version: {}, address: {}, engine: {}",

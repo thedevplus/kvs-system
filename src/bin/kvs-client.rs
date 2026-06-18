@@ -1,8 +1,8 @@
 use clap::Parser;
 use kvs::kvs::KvCommand;
 use kvs::protocol::{self, KvStream};
-use kvs::{Result, logger};
-use log::debug;
+use kvs::Result;
+use log::{LevelFilter, debug};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::process;
@@ -22,10 +22,10 @@ struct Args {
 }
 
 fn main() -> Result<()> {
-    logger::init()?;
+    stderrlog::new().verbosity(LevelFilter::Debug).init()?;
     let args = Args::parse();
     debug!(
-        "program: kvs-server, version: {}, address: {}",
+        "program: kvs-client, version: {}, address: {}",
         env!("CARGO_PKG_VERSION"),
         args.addr
     );
