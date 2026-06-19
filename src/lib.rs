@@ -3,8 +3,8 @@ use crate::error::KvError;
 mod engine;
 pub mod error;
 pub mod kvs;
-pub mod sled;
 pub mod protocol;
+pub mod sled;
 
 pub type Result<T> = std::result::Result<T, KvError>;
 

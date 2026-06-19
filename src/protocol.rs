@@ -1,16 +1,27 @@
 use crate::Result;
-use crate::kvs::KvCommand;
 use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Visitor};
 use std::process;
 
+#[derive(Clone, Copy, Debug)]
+pub enum StreamCommand {
+    St,
+    Gt,
+    Rm,
+    Se,
+    Ge,
+    Gn,
+    Re,
+}
+
+#[derive(Clone, Debug)]
 pub struct KvStream {
-    pub command: KvCommand,
+    pub command: StreamCommand,
     pub key: String,
     pub value: Option<String>,
 }
 
 impl KvStream {
-    pub fn build_from(command: KvCommand, key: String, value: Option<String>) -> Self {
+    pub fn build_from(command: StreamCommand, key: String, value: Option<String>) -> Self {
         Self {
             command,
             key,
@@ -29,8 +40,8 @@ impl Serialize for KvStream {
         S: Serializer,
     {
         let stream = match self.command {
-            KvCommand::Set => {
-                let stream = String::from("s");
+            StreamCommand::St => {
+                let stream = String::from("st");
                 stream
                     + self.key.as_ref()
                     + "\t\t"
@@ -40,12 +51,21 @@ impl Serialize for KvStream {
                         .ok_or("Value error")
                         .map_err(serde::ser::Error::custom)?
             }
-            KvCommand::Get => {
-                let stream = String::from("g");
-                stream + self.key.as_ref()
-            }
-            KvCommand::Rm => {
-                let stream = String::from("r");
+            other => {
+                let mut stream = String::from("");
+                if let StreamCommand::Gt = other {
+                    stream += "gt";
+                } else if let StreamCommand::Rm = other {
+                    stream += "rm";
+                } else if let StreamCommand::Se = other {
+                    stream += "se";
+                } else if let StreamCommand::Ge = other {
+                    stream += "ge";
+                } else if let StreamCommand::Gn = other {
+                    stream += "gn";
+                } else {
+                    stream += "re";
+                }
                 stream + self.key.as_ref()
             }
         };
@@ -69,30 +89,31 @@ impl<'de> Visitor<'de> for DeStream {
         E: serde::de::Error,
     {
         let mut iter = v.split("\t\t");
-        let mut kv_stream = KvStream::build_from(KvCommand::Get, String::from(""), None);
-        if let Some(value) = iter.next() {
-            match &value[0..1] {
-                cmd @ ("s" | "g" | "r") => {
-                    if cmd == "g" {
-                        kv_stream.command = KvCommand::Get;
-                    } else if cmd == "r" {
-                        kv_stream.command = KvCommand::Rm;
-                    } else {
-                        kv_stream.command = KvCommand::Set;
-                        if let Some(value) = iter.next() {
-                            kv_stream.value = Some(value.to_string());
-                        } else {
-                            process::exit(1);
-                        }
-                    }
-                    if !value[1..].is_empty() {
-                        kv_stream.key = value[1..].to_string();
-                    } else {
-                        process::exit(1);
-                    }
+        let mut kv_stream = KvStream::build_from(StreamCommand::Gt, String::from(""), None);
+        if let Some(value) = iter.next()
+            && let cmd @ ("st" | "gt" | "rm" | "se" | "ge" | "gn" | "re") = &value[..2]
+        {
+            if cmd == "gt" {
+                kv_stream.command = StreamCommand::Gt;
+            } else if cmd == "rm" {
+                kv_stream.command = StreamCommand::Rm;
+            } else if cmd == "se" {
+                kv_stream.command = StreamCommand::Se;
+            } else if cmd == "ge" {
+                kv_stream.command = StreamCommand::Ge;
+            } else if cmd == "gn" {
+                kv_stream.command = StreamCommand::Gn;
+            } else if cmd == "re" {
+                kv_stream.command = StreamCommand::Re;
+            } else {
+                kv_stream.command = StreamCommand::St;
+                if let Some(value) = iter.next() {
+                    kv_stream.value = Some(value.to_string());
+                } else {
+                    process::exit(1);
                 }
-                _ => process::exit(1),
             }
+            kv_stream.key = value[2..].to_string();
         }
         Ok(kv_stream)
     }

@@ -1,8 +1,8 @@
 use clap::Parser;
-use kvs::kvs::KvCommand;
-use kvs::protocol::{self, KvStream};
 use kvs::Result;
-use log::{LevelFilter, debug};
+use kvs::kvs::KvCommand;
+use kvs::protocol::{self, KvStream, StreamCommand};
+use log::{LevelFilter, info};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
 use std::process;
@@ -22,36 +22,41 @@ struct Args {
 }
 
 fn main() -> Result<()> {
-    stderrlog::new().verbosity(LevelFilter::Debug).init()?;
+    stderrlog::new().verbosity(LevelFilter::Info).init()?;
     let args = Args::parse();
-    debug!(
-        "program: kvs-client, version: {}, address: {}",
-        env!("CARGO_PKG_VERSION"),
-        args.addr
-    );
 
     let mut tcp_stream = TcpStream::connect(args.addr)?;
+    info!("Connect to {}: ok.", args.addr);
 
     let stream = match args.command {
         KvCommand::Set if let Some(value) = args.value => protocol::create_protocol_stream(
-            &KvStream::build_from(args.command, args.key, Some(value)),
+            &KvStream::build_from(StreamCommand::St, args.key, Some(value)),
         ),
-        KvCommand::Get | KvCommand::Rm if args.value.is_none() => {
-            protocol::create_protocol_stream(&KvStream::build_from(args.command, args.key, None))
-        }
+        KvCommand::Get if args.value.is_none() => protocol::create_protocol_stream(
+            &KvStream::build_from(StreamCommand::Gt, args.key, None),
+        ),
+        KvCommand::Rm if args.value.is_none() => protocol::create_protocol_stream(
+            &KvStream::build_from(StreamCommand::Rm, args.key, None),
+        ),
         _ => process::exit(1),
     }?;
 
-    debug!("{stream:?}");
     tcp_stream.write_all(&stream)?;
-    tcp_stream.write_all(b"\r\n")?;
+    tcp_stream.write_all(b"\n")?;
 
     let stream = BufReader::new(&tcp_stream);
     if let Some(Ok(kv_stream)) = stream.lines().next() {
-        println!(
-            "{}",
-            protocol::parse_protocol_stream(kv_stream.as_bytes())?.key
-        );
+        let stream = protocol::parse_protocol_stream(kv_stream.as_bytes())?;
+        match stream.command {
+            StreamCommand::St | StreamCommand::Rm => (),
+            StreamCommand::Gt => println!("{}", stream.key),
+            StreamCommand::Gn => println!("{}", stream.key),
+            StreamCommand::Re => {
+                eprintln!("{}", stream.key);
+                process::exit(1);
+            }
+            _ => process::exit(1),
+        }
     }
 
     Ok(())

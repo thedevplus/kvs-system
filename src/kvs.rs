@@ -13,7 +13,6 @@ use crate::Result;
 use crate::engine::KvsEngine;
 use crate::error::KvError;
 use clap::ValueEnum;
-use log::debug;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, DirBuilder, File, OpenOptions};
@@ -21,8 +20,6 @@ use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::time::SystemTime;
 
-/// Directory name for storing log files
-const LOG_FILE_DIR: &str = "database";
 /// File extension for log files
 const LOG_FILE_EXT: &str = "log";
 /// Maximum size per log file
@@ -48,10 +45,10 @@ pub enum KvCommand {
 
 #[derive(Deserialize, Serialize, Clone, Debug)]
 struct KvLog {
-    pub command: KvCommand,
+    command: KvCommand,
     time: SystemTime,
-    pub key: String,
-    pub value: Option<String>,
+    key: String,
+    value: Option<String>,
 }
 
 #[derive(Clone, Deserialize, Serialize, Debug)]
@@ -70,7 +67,9 @@ impl KvsEngine for KvStore {
         let kv_log = KvLog::build_from(KvCommand::Set, key.clone(), Some(value));
         self.write_log(&kv_log)?;
         self.add_index(key)?;
-        self.start_compact()
+        self.start_compact()?;
+        self.buffer.flush()?;
+        Ok(())
     }
 
     /// Gets the value associated with the given key.
@@ -83,11 +82,11 @@ impl KvsEngine for KvStore {
         }
         match self.read_log(&key) {
             Ok(log) => {
-                println!("{}", log.value.as_ref().unwrap());
+                // println!("{}", log.value.as_ref().unwrap());
                 Ok(log.value)
             }
             Err(_) => {
-                println!("Key not found");
+                // eprintln!("Key not found");
                 Ok(None)
             }
         }
@@ -101,9 +100,11 @@ impl KvsEngine for KvStore {
             let kv_log = KvLog::build_from(KvCommand::Rm, key.clone(), None);
             self.write_log(&kv_log)?;
             self.delete_index(key)?;
-            self.start_compact()
+            self.start_compact()?;
+            self.buffer.flush()?;
+            Ok(())
         } else {
-            println!("Key not found");
+            // eprintln!("Key not found");
             Err(KvError::Log)
         }
     }
@@ -115,9 +116,7 @@ impl KvStore {
     /// Creates the database directory and log files if they do not exist.
     /// Builds the in-memory index from existing log files on startup.
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
-        let mut path = path.into();
-        path.push(LOG_FILE_DIR);
-        debug!("Initialize path ok.");
+        let path = path.into();
         directory_initial(&path)?;
         let mut kvs = Self {
             buffer: BufWriter::new(
@@ -132,14 +131,12 @@ impl KvStore {
             uncompact: 0,
             flag: false,
         };
-        debug!("Initialize file ok.");
         kvs.map = kvs.start_build_index()?;
         kvs.buffer = BufWriter::new(
             OpenOptions::new()
                 .append(true)
                 .open(number_convert_to_log_path(&path, kvs.active.log))?,
         );
-        debug!("Open pointer file ok.");
         Ok(kvs)
     }
 
@@ -335,7 +332,6 @@ fn get_size(log: &KvLog) -> u64 {
 fn directory_initial(dir: &PathBuf) -> Result<()> {
     if !dir.is_dir() {
         DirBuilder::new().create(dir)?;
-        debug!("Creation path ok.");
         File::create(number_convert_to_log_path(dir, 0))?;
     }
     Ok(())
