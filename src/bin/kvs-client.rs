@@ -22,7 +22,11 @@ struct Args {
 }
 
 fn main() -> Result<()> {
-    stderrlog::new().verbosity(LevelFilter::Info).init()?;
+    stderrlog::new()
+        .module(module_path!())
+        .show_module_names(true)
+        .verbosity(LevelFilter::Info)
+        .init()?;
     let args = Args::parse();
 
     let mut tcp_stream = TcpStream::connect(args.addr)?;

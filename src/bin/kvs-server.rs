@@ -31,7 +31,11 @@ enum Engine {
 }
 
 fn main() -> Result<()> {
-    stderrlog::new().verbosity(LevelFilter::Debug).init()?;
+    stderrlog::new()
+        .module(module_path!())
+        .show_module_names(true)
+        .verbosity(LevelFilter::Debug)
+        .init()?;
     let args = Args::parse();
     debug!(
         "program: kvs-server, version: {}, address: {}, engine: {}",

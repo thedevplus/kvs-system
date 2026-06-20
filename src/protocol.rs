@@ -1,5 +1,6 @@
 use crate::Result;
-use serde::{Deserialize, Deserializer, Serialize, Serializer, de::Visitor};
+use serde::{Deserialize, Deserializer, Serialize, Serializer};
+use serde::de::Visitor;
 use std::process;
 
 #[derive(Clone, Copy, Debug)]
