@@ -64,7 +64,7 @@ fn main() -> Result<()> {
     }
     let mut kvs: Box<dyn KvsEngine> = match args.engine {
         Some(Engine::Kvs) | None if !engine_exist.0 => Box::new(KvStore::open(&path)?),
-        Some(Engine::Sled) if !engine_exist.1 => Box::new(SledKvsEngine::open(&path)?),
+        Some(Engine::Sled) | None if !engine_exist.1 => Box::new(SledKvsEngine::open(&path)?),
         _ => {
             eprintln!("Data was previously persisted with a different engine");
             process::exit(1);
