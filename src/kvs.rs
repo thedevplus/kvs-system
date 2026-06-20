@@ -33,7 +33,7 @@ pub struct KvStore {
     buffer: BufWriter<File>,
     map: HashMap<String, KvPointer>,
     uncompact: u64,
-    flag: bool,
+    // flag: bool,
 }
 
 #[derive(Copy, Clone, Deserialize, Serialize, Debug, ValueEnum)]
@@ -76,10 +76,12 @@ impl KvsEngine for KvStore {
     ///
     /// Returns `Some(value)` if the key exists, `None` otherwise.
     fn get(&mut self, key: String) -> Result<Option<String>> {
+        /* Not needed if set and rm command flush themselves
         if self.flag {
             self.buffer.flush()?;
             self.flag = false;
         }
+        */
         match self.read_log(&key) {
             Ok(log) => {
                 // println!("{}", log.value.as_ref().unwrap());
@@ -129,7 +131,7 @@ impl KvStore {
             path: path.clone(),
             active: KvPointer::new(),
             uncompact: 0,
-            flag: false,
+            // flag: false,
         };
         kvs.map = kvs.start_build_index()?;
         kvs.buffer = BufWriter::new(
@@ -157,7 +159,7 @@ impl KvStore {
         self.buffer.write_all(&stream)?;
         self.buffer.write_all(b"\n")?;
         self.active = self.active.build_from(sz);
-        self.flag = true;
+        // self.flag = true;
         Ok(())
     }
 
