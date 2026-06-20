@@ -10,3 +10,4 @@ pub type Result<T> = std::result::Result<T, KvError>;
 
 pub use crate::engine::KvsEngine;
 pub use crate::kvs::KvStore;
+pub use crate::sled::SledKvsEngine;
