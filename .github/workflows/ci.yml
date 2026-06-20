@@ -1,17 +1,41 @@
-name: CI
+name: Rust CI
 
 on:
   push:
-    branches: [ main ]
+    branches: [ "main", "master" ]
   pull_request:
-    branches: [ main ]
+    branches: [ "main", "master" ]
+
+env:
+  CARGO_TERM_COLOR: always
 
 jobs:
-  build:
+  test:
+    name: Build and Test
     runs-on: ubuntu-latest
+
     steps:
-    - uses: actions/checkout@v4
-    - name: Build
-      run: cargo build --verbose
+    - name: Checkout code
+      uses: actions/checkout@v4
+
+    # Set up Rust toolchain with clippy and rustfmt components
+    - name: Set up Rust toolchain
+      uses: dtolnay/rust-toolchain@stable
+      with:
+        components: clippy, rustfmt
+
+    # Enable Rust cache to speed up builds by caching dependencies
+    - name: Rust Cache
+      uses: Swatinem/rust-cache@v2
+
+    # Check code formatting compliance
+    - name: Check formatting
+      run: cargo fmt --check
+
+    # Run clippy with warnings treated as errors
+    - name: Run Clippy
+      run: cargo clippy -- -D warnings
+
+    # Execute all tests
     - name: Run tests
       run: cargo test --verbose
