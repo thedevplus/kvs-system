@@ -7,12 +7,12 @@
 //! key-value operations (Set, Get, Remove). It supports two storage engines:
 //! - `kvs`: A custom log-structured key-value store
 //! - `sled`: An embedded database using the sled library
-//! 
+//!
 
 use clap::{Parser, ValueEnum};
 use kvs::error::KvError;
 use kvs::protocol::{KvStream, StreamCommand};
-use kvs::{KvStore, SledKvsEngine, KvsEngine, Result, protocol};
+use kvs::{KvStore, KvsEngine, Result, SledKvsEngine, protocol};
 use log::{LevelFilter, debug, info};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
@@ -70,11 +70,11 @@ fn main() -> Result<()> {
     );
 
     let listener = TcpListener::bind(args.addr)?;
-    
+
     // Prepare database directory path
     let mut path = PathBuf::from("./");
     path.push(LOG_FILE_DIR);
-    
+
     // Detect existing storage engine by checking file types
     // (db files indicate sled, .log files indicate kvs)
     let mut engine_exist = (false, false);
@@ -92,7 +92,7 @@ fn main() -> Result<()> {
             }
         }
     }
-    
+
     // Initialize the appropriate storage engine
     let mut kvs: Box<dyn KvsEngine> = match args.engine {
         Some(Engine::Kvs) | None if !engine_exist.0 => Box::new(KvStore::open(&path)?),
@@ -109,7 +109,7 @@ fn main() -> Result<()> {
         let stream = BufReader::new(&tcp_stream);
         let mut iter = stream.lines();
         let mut tcp_stream = tcp_stream.try_clone()?;
-        
+
         // Process each command from the client
         while let Some(Ok(stream)) = iter.next() {
             let v = stream.as_bytes().to_owned();
