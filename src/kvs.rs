@@ -30,7 +30,8 @@ const LOG_UNCOMPACT: u64 = 1000;
 pub struct KvStore {
     path: PathBuf,
     active: KvPointer,
-    buffer: BufWriter<File>,
+    writer: BufWriter<File>,
+    reader: HashMap<u64, BufReader<File>>,
     map: HashMap<String, KvPointer>,
     uncompact: u64,
     // flag: bool,
@@ -68,7 +69,7 @@ impl KvsEngine for KvStore {
         self.write_log(&kv_log)?;
         self.add_index(key)?;
         self.start_compact()?;
-        self.buffer.flush()?;
+        self.writer.flush()?;
         Ok(())
     }
 
@@ -103,7 +104,7 @@ impl KvsEngine for KvStore {
             self.write_log(&kv_log)?;
             self.delete_index(key)?;
             self.start_compact()?;
-            self.buffer.flush()?;
+            self.writer.flush()?;
             Ok(())
         } else {
             // eprintln!("Key not found");
@@ -121,20 +122,21 @@ impl KvStore {
         let path = path.into();
         directory_initial(&path)?;
         let mut kvs = Self {
-            buffer: BufWriter::new(
+            writer: BufWriter::new(
                 OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(number_convert_to_log_path(&path, 0))?,
             ),
+            reader: HashMap::new(),
             map: HashMap::new(),
             path: path.clone(),
             active: KvPointer::new(),
             uncompact: 0,
             // flag: false,
         };
-        kvs.map = kvs.start_build_index()?;
-        kvs.buffer = BufWriter::new(
+        kvs.start_build_map_and_reader()?;
+        kvs.writer = BufWriter::new(
             OpenOptions::new()
                 .append(true)
                 .open(number_convert_to_log_path(&path, kvs.active.log))?,
@@ -149,28 +151,28 @@ impl KvStore {
             self.active.log += 1;
             self.active.pos = 0;
             self.active.sz = 0;
-            self.buffer = BufWriter::new(
+            self.writer = BufWriter::new(
                 OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(number_convert_to_log_path(&self.path, self.active.log))?,
             );
         }
-        self.buffer.write_all(&stream)?;
-        self.buffer.write_all(b"\n")?;
+        self.writer.write_all(&stream)?;
+        self.writer.write_all(b"\n")?;
         self.active = self.active.build_from(sz);
         // self.flag = true;
         Ok(())
     }
 
-    fn read_log(&self, key: &String) -> Result<KvLog> {
+    fn read_log(&mut self, key: &String) -> Result<KvLog> {
         let Some(p) = self.map.get(key) else {
             return Err(KvError::Log);
         };
-        let mut file = BufReader::new(File::open(number_convert_to_log_path(&self.path, p.log))?);
+        let reader = self.reader.get_mut(&p.log).ok_or(KvError::File)?;
         let mut data = vec![0u8; p.sz as usize];
-        file.seek(SeekFrom::Start(p.pos))?;
-        file.read_exact(&mut data)?;
+        reader.seek(SeekFrom::Start(p.pos))?;
+        reader.read_exact(&mut data)?;
         let log: KvLog = self.stream_deserialize(&data)?;
         Ok(log)
     }
@@ -216,34 +218,33 @@ impl KvStore {
         Ok(dir_files)
     }
 
-    fn start_build_index(&mut self) -> Result<HashMap<String, KvPointer>> {
-        let mut map = HashMap::new();
+    fn start_build_map_and_reader(&mut self) -> Result<()> {
         for e in self.read_directory_and_sort()?.iter() {
             let log = e.0;
             let mut pos = 0u64;
             let mut sz = 0u64;
             let file = &e.1;
-            let reader = BufReader::new(File::open(file)?);
-            serde_json::Deserializer::from_reader(reader)
+            self.reader.insert(log, BufReader::new(File::open(file)?));
+            serde_json::Deserializer::from_reader(self.reader.get_mut(&log).ok_or(KvError::File)?)
                 .into_iter::<KvLog>()
                 .flatten()
                 .for_each(|e| {
                     sz = get_size(&e);
                     let pointer = KvPointer { log, pos, sz };
                     if let KvCommand::Set = e.command {
-                        if map.contains_key(&e.key) {
+                        if self.map.contains_key(&e.key) {
                             self.uncompact += 1;
                         }
-                        map.insert(e.key, pointer.clone());
+                        self.map.insert(e.key, pointer.clone());
                     } else {
-                        map.remove(&e.key);
+                        self.map.remove(&e.key);
                         self.uncompact += 1;
                     }
                     self.active = pointer;
                     pos += sz;
                 });
         }
-        Ok(map)
+        Ok(())
     }
 
     fn start_compact(&mut self) -> Result<()> {
