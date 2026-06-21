@@ -79,7 +79,7 @@ fn bench_read(c: &mut Criterion) -> Result<()> {
     let mut group = c.benchmark_group("read_group");
     group.bench_with_input(BenchmarkId::new("kvs", "get"), &arg, |b, d| {
         b.iter(|| {
-            let mut count = 10u8;
+            let mut count = 1u8;
             while count <= 10 {
                 let index = &d.0;
                 for e in index {
@@ -95,7 +95,7 @@ fn bench_read(c: &mut Criterion) -> Result<()> {
     });
     group.bench_with_input(BenchmarkId::new("sled", "get"), &arg, |b, d| {
         b.iter(|| {
-            let mut count = 10u8;
+            let mut count = 1u8;
             while count <= 10 {
                 let index = &d.0;
                 for e in index {
