@@ -33,6 +33,21 @@ This project implements a log-structured key-value store inspired by the Bitcask
 - [ ] **Milestone 4**: Thread-pool concurrency engine (`Send + Sync` optimization). — *In Progress*
 - [ ] **Milestone 5**: Full asynchronous migration via Tokio runtime.
 
+## Optimization Results
+
+Performance comparison after optimizing read performance by caching BufReader per log file:
+
+### Optimization
+
+- **BufReader caching**: Maintain a dedicated BufReader for each log file to avoid repeated file handle creation.
+
+### Key Findings
+
+- **Read**: After optimization, ordered and disordered reads have similar performance, with read time improved by ~30%.
+
+![Benchmark Result - Round 1](assets/p3-1-1-performance.png)
+![Benchmark Result - Round 5](assets/p3-1-5-performance.png)
+
 ## Usage
 
 ### Server
