@@ -83,7 +83,7 @@ struct DeStream {}
 impl<'de> Visitor<'de> for DeStream {
     type Value = KvStream;
     fn expecting(&self, formatter: &mut std::fmt::Formatter) -> std::fmt::Result {
-        write!(formatter, "Need a vector of u8 stream")
+        write!(formatter, "Need a &str type")
     }
     fn visit_str<E>(self, v: &str) -> std::result::Result<Self::Value, E>
     where
