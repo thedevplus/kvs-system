@@ -18,7 +18,7 @@ use std::collections::HashMap;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::time::SystemTime;
+// use std::time::SystemTime;
 
 /// File extension for log files
 const LOG_FILE_EXT: &str = "log";
@@ -46,7 +46,7 @@ pub enum KvCommand {
 #[derive(Deserialize, Serialize, Clone, Debug)]
 struct KvLog {
     command: KvCommand,
-    time: SystemTime,
+    // time: SystemTime,
     key: String,
     value: Option<String>,
 }
@@ -206,8 +206,10 @@ impl KvStore {
                 .ok_or(KvError::File)?
                 .to_str()
                 .ok_or(KvError::File)?;
-            if !(file.contains("._") || file.contains(".DS_")) {
-                dir_files.push((file.parse().unwrap(), entry));
+            if !(file.contains("._") || file.contains(".DS_"))
+                && let Ok(file) = file.parse()
+            {
+                dir_files.push((file, entry));
             }
         }
         dir_files.sort();
@@ -310,7 +312,7 @@ impl KvLog {
     fn build_from(command: KvCommand, key: String, value: Option<String>) -> Self {
         Self {
             command,
-            time: SystemTime::now(),
+            // time: SystemTime::now(),
             key,
             value,
         }
