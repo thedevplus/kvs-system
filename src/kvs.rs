@@ -28,11 +28,13 @@ const LOG_FILE_SIZE: u64 = 1024 * 1024;
 /// Threshold for triggering compaction
 const LOG_UNCOMPACT: u64 = 1000;
 
+type MultiSafeHashMap = Arc<RwLock<HashMap<u64, Arc<RwLock<BufReader<File>>>>>>;
+
 pub struct KvStore {
     path: Arc<RwLock<PathBuf>>,
     active: Arc<RwLock<KvPointer>>,
     writer: Arc<RwLock<BufWriter<File>>>,
-    reader: Arc<RwLock<HashMap<u64, Arc<RwLock<BufReader<File>>>>>>,
+    reader: MultiSafeHashMap,
     map: Arc<RwLock<HashMap<String, KvPointer>>>,
     uncompact: Arc<RwLock<u64>>,
     // flag: bool,

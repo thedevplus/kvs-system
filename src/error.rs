@@ -1,4 +1,4 @@
-use std::{io, str, sync};
+use std::{io, str};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
