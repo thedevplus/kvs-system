@@ -5,6 +5,7 @@ use std::fs::DirBuilder;
 use std::path::PathBuf;
 use std::process;
 
+#[derive(Clone)]
 pub struct SledKvsEngine {
     sled: Db,
 }
@@ -24,13 +25,13 @@ impl SledKvsEngine {
 }
 
 impl KvsEngine for SledKvsEngine {
-    fn set(&mut self, key: String, value: String) -> Result<()> {
+    fn set(&self, key: String, value: String) -> Result<()> {
         self.sled.insert(key, value.as_bytes())?;
         self.sled.flush()?;
         Ok(())
     }
 
-    fn get(&mut self, key: String) -> Result<Option<String>> {
+    fn get(&self, key: String) -> Result<Option<String>> {
         self.sled.flush()?;
         match self.sled.get(key) {
             Ok(Some(v)) => Ok(Some(str::from_utf8(v.trim_ascii())?.to_string())),
@@ -39,7 +40,7 @@ impl KvsEngine for SledKvsEngine {
         }
     }
 
-    fn remove(&mut self, key: String) -> Result<()> {
+    fn remove(&self, key: String) -> Result<()> {
         if self.sled.remove(key)?.is_some() {
             self.sled.flush()?;
             Ok(())

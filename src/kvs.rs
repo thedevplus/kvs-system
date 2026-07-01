@@ -18,6 +18,7 @@ use std::collections::HashMap;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
+use std::sync::{Arc, RwLock};
 // use std::time::SystemTime;
 
 /// File extension for log files
@@ -28,12 +29,12 @@ const LOG_FILE_SIZE: u64 = 1024 * 1024;
 const LOG_UNCOMPACT: u64 = 1000;
 
 pub struct KvStore {
-    path: PathBuf,
-    active: KvPointer,
-    writer: BufWriter<File>,
-    reader: HashMap<u64, BufReader<File>>,
-    map: HashMap<String, KvPointer>,
-    uncompact: u64,
+    path: Arc<RwLock<PathBuf>>,
+    active: Arc<RwLock<KvPointer>>,
+    writer: Arc<RwLock<BufWriter<File>>>,
+    reader: Arc<RwLock<HashMap<u64, Arc<RwLock<BufReader<File>>>>>>,
+    map: Arc<RwLock<HashMap<String, KvPointer>>>,
+    uncompact: Arc<RwLock<u64>>,
     // flag: bool,
 }
 
@@ -59,24 +60,37 @@ struct KvPointer {
     sz: u64,
 }
 
+impl Clone for KvStore {
+    fn clone(&self) -> Self {
+        Self {
+            path: Arc::clone(&self.path),
+            active: Arc::clone(&self.active),
+            writer: Arc::clone(&self.writer),
+            reader: Arc::clone(&self.reader),
+            map: Arc::clone(&self.map),
+            uncompact: Arc::clone(&self.uncompact),
+        }
+    }
+}
+
 impl KvsEngine for KvStore {
     /// Sets a key-value pair in the store.
     ///
     /// If the key already exists, the value will be updated.
     /// Triggers compaction when the uncompact count exceeds the threshold.
-    fn set(&mut self, key: String, value: String) -> Result<()> {
+    fn set(&self, key: String, value: String) -> Result<()> {
         let kv_log = KvLog::build_from(KvCommand::Set, key.clone(), Some(value));
         self.write_log(&kv_log)?;
         self.add_index(key)?;
         self.start_compact()?;
-        self.writer.flush()?;
+        self.writer.write().map_err(|_| KvError::RwLock)?.flush()?;
         Ok(())
     }
 
     /// Gets the value associated with the given key.
     ///
     /// Returns `Some(value)` if the key exists, `None` otherwise.
-    fn get(&mut self, key: String) -> Result<Option<String>> {
+    fn get(&self, key: String) -> Result<Option<String>> {
         /* Not needed if set and rm command flush themselves
         if self.flag {
             self.buffer.flush()?;
@@ -98,13 +112,18 @@ impl KvsEngine for KvStore {
     /// Removes the key-value pair associated with the given key.
     ///
     /// Returns an error if the key does not exist.
-    fn remove(&mut self, key: String) -> Result<()> {
-        if self.map.contains_key(&key) {
+    fn remove(&self, key: String) -> Result<()> {
+        if self
+            .map
+            .read()
+            .map_err(|_| KvError::RwLock)?
+            .contains_key(&key)
+        {
             let kv_log = KvLog::build_from(KvCommand::Rm, key.clone(), None);
             self.write_log(&kv_log)?;
             self.delete_index(key)?;
             self.start_compact()?;
-            self.writer.flush()?;
+            self.writer.write().map_err(|_| KvError::RwLock)?.flush()?;
             Ok(())
         } else {
             // eprintln!("Key not found");
@@ -121,55 +140,79 @@ impl KvStore {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
         directory_initial(&path)?;
-        let mut kvs = Self {
-            writer: BufWriter::new(
+        let kvs = Self {
+            writer: Arc::new(RwLock::new(BufWriter::new(
                 OpenOptions::new()
                     .create(true)
                     .append(true)
                     .open(number_convert_to_log_path(&path, 0))?,
-            ),
-            reader: HashMap::new(),
-            map: HashMap::new(),
-            path: path.clone(),
-            active: KvPointer::new(),
-            uncompact: 0,
+            ))),
+            reader: Arc::new(RwLock::new(HashMap::new())),
+            map: Arc::new(RwLock::new(HashMap::new())),
+            path: Arc::new(RwLock::new(path.clone())),
+            active: Arc::new(RwLock::new(KvPointer::new())),
+            uncompact: Arc::new(RwLock::new(0)),
             // flag: false,
         };
         kvs.start_build_map_and_reader()?;
-        kvs.writer = BufWriter::new(
+        *kvs.writer.write().map_err(|_| KvError::RwLock)? = BufWriter::new(
             OpenOptions::new()
                 .append(true)
-                .open(number_convert_to_log_path(&path, kvs.active.log))?,
+                .open(number_convert_to_log_path(
+                    &path,
+                    kvs.active.read().map_err(|_| KvError::RwLock)?.log,
+                ))?,
         );
         Ok(kvs)
     }
 
-    fn write_log(&mut self, log: &KvLog) -> Result<()> {
+    fn write_log(&self, log: &KvLog) -> Result<()> {
         let stream = self.stream_serialize(log)?;
         let sz = stream.len() as u64 + 1;
-        if self.active.pos + self.active.sz + sz > LOG_FILE_SIZE {
-            self.active.log += 1;
-            self.active.pos = 0;
-            self.active.sz = 0;
-            self.writer = BufWriter::new(
-                OpenOptions::new()
-                    .create(true)
-                    .append(true)
-                    .open(number_convert_to_log_path(&self.path, self.active.log))?,
-            );
+        if self.active.read().map_err(|_| KvError::RwLock)?.pos
+            + self.active.read().map_err(|_| KvError::RwLock)?.sz
+            + sz
+            > LOG_FILE_SIZE
+        {
+            self.active.write().map_err(|_| KvError::RwLock)?.log += 1;
+            self.active.write().map_err(|_| KvError::RwLock)?.pos = 0;
+            self.active.write().map_err(|_| KvError::RwLock)?.sz = 0;
+            *self.writer.write().map_err(|_| KvError::RwLock)? =
+                BufWriter::new(OpenOptions::new().create(true).append(true).open(
+                    number_convert_to_log_path(
+                        self.path.read().map_err(|_| KvError::RwLock)?.as_path(),
+                        self.active.read().map_err(|_| KvError::RwLock)?.log,
+                    ),
+                )?);
         }
-        self.writer.write_all(&stream)?;
-        self.writer.write_all(b"\n")?;
-        self.active = self.active.build_from(sz);
+        self.writer
+            .write()
+            .map_err(|_| KvError::RwLock)?
+            .write_all(&stream)?;
+        self.writer
+            .write()
+            .map_err(|_| KvError::RwLock)?
+            .write_all(b"\n")?;
+        *self.active.write().map_err(|_| KvError::RwLock)? = self
+            .active
+            .read()
+            .map_err(|_| KvError::RwLock)?
+            .build_from(sz);
         // self.flag = true;
         Ok(())
     }
 
-    fn read_log(&mut self, key: &String) -> Result<KvLog> {
-        let Some(p) = self.map.get(key) else {
+    fn read_log(&self, key: &String) -> Result<KvLog> {
+        let current_map = self.map.read().map_err(|_| KvError::RwLock)?;
+        let Some(p) = current_map.get(key) else {
             return Err(KvError::Log);
         };
-        let reader = self.reader.get_mut(&p.log).ok_or(KvError::File)?;
+        let current_reader = self.reader.read().map_err(|_| KvError::RwLock)?;
+        let mut reader = current_reader
+            .get(&p.log)
+            .ok_or(KvError::File)?
+            .write()
+            .map_err(|_| KvError::RwLock)?;
         let mut data = vec![0u8; p.sz as usize];
         reader.seek(SeekFrom::Start(p.pos))?;
         reader.read_exact(&mut data)?;
@@ -177,7 +220,7 @@ impl KvStore {
         Ok(log)
     }
 
-    fn stream_serialize<T: Serialize>(&mut self, data: T) -> Result<Vec<u8>> {
+    fn stream_serialize<T: Serialize>(&self, data: T) -> Result<Vec<u8>> {
         Ok(serde_json::to_vec(&data)?)
     }
 
@@ -185,23 +228,28 @@ impl KvStore {
         Ok(serde_json::from_slice(data)?)
     }
 
-    fn add_index(&mut self, key: String) -> Result<()> {
-        let None = self.map.insert(key.clone(), self.active.clone()) else {
-            self.uncompact += 1;
+    fn add_index(&self, key: String) -> Result<()> {
+        let None = self.map.write().map_err(|_| KvError::RwLock)?.insert(
+            key,
+            self.active.read().map_err(|_| KvError::RwLock)?.clone(),
+        ) else {
+            *self.uncompact.write().map_err(|_| KvError::RwLock)? += 1;
             return Ok(());
         };
         Ok(())
     }
 
-    fn delete_index(&mut self, key: String) -> Result<()> {
-        self.map.remove(&key);
-        self.uncompact += 1;
+    fn delete_index(&self, key: String) -> Result<()> {
+        self.map.write().map_err(|_| KvError::RwLock)?.remove(&key);
+        *self.uncompact.write().map_err(|_| KvError::RwLock)? += 1;
         Ok(())
     }
 
     fn read_directory_and_sort(&self) -> Result<Vec<(u64, PathBuf)>> {
         let mut dir_files = Vec::new();
-        for entry in fs::read_dir(&self.path)?.flatten() {
+        for entry in
+            fs::read_dir(self.path.read().map_err(|_| KvError::RwLock)?.as_path())?.flatten()
+        {
             let entry = entry.path();
             let file = entry
                 .file_prefix()
@@ -218,38 +266,50 @@ impl KvStore {
         Ok(dir_files)
     }
 
-    fn start_build_map_and_reader(&mut self) -> Result<()> {
+    fn start_build_map_and_reader(&self) -> Result<()> {
         for e in self.read_directory_and_sort()?.iter() {
             let log = e.0;
             let mut pos = 0u64;
             let mut sz = 0u64;
             let file = &e.1;
-            self.reader.insert(log, BufReader::new(File::open(file)?));
-            serde_json::Deserializer::from_reader(self.reader.get_mut(&log).ok_or(KvError::File)?)
-                .into_iter::<KvLog>()
-                .flatten()
-                .for_each(|e| {
-                    sz = get_size(&e);
-                    let pointer = KvPointer { log, pos, sz };
-                    if let KvCommand::Set = e.command {
-                        if self.map.contains_key(&e.key) {
-                            self.uncompact += 1;
-                        }
-                        self.map.insert(e.key, pointer.clone());
-                    } else {
-                        self.map.remove(&e.key);
-                        self.uncompact += 1;
+            self.reader.write().map_err(|_| KvError::RwLock)?.insert(
+                log,
+                Arc::new(RwLock::new(BufReader::new(File::open(file)?))),
+            );
+            serde_json::Deserializer::from_reader(
+                self.reader
+                    .read()
+                    .map_err(|_| KvError::RwLock)?
+                    .get(&log)
+                    .ok_or(KvError::File)?
+                    .read()
+                    .map_err(|_| KvError::RwLock)?
+                    .get_ref(),
+            )
+            .into_iter::<KvLog>()
+            .flatten()
+            .for_each(|e| {
+                sz = get_size(&e);
+                let pointer = KvPointer { log, pos, sz };
+                if let KvCommand::Set = e.command {
+                    if self.map.read().unwrap().contains_key(&e.key) {
+                        *self.uncompact.write().unwrap() += 1;
                     }
-                    self.active = pointer;
-                    pos += sz;
-                });
+                    self.map.write().unwrap().insert(e.key, pointer.clone());
+                } else {
+                    self.map.write().unwrap().remove(&e.key);
+                    *self.uncompact.write().unwrap() += 1;
+                }
+                *self.active.write().unwrap() = pointer;
+                pos += sz;
+            });
         }
         Ok(())
     }
 
-    fn start_compact(&mut self) -> Result<()> {
-        if self.uncompact > LOG_UNCOMPACT {
-            let compact_bound = self.active.log;
+    fn start_compact(&self) -> Result<()> {
+        if *self.uncompact.read().map_err(|_| KvError::RwLock)? > LOG_UNCOMPACT {
+            let compact_bound = self.active.read().map_err(|_| KvError::RwLock)?.log;
             for e in self.read_directory_and_sort()?.iter() {
                 let log = e.0;
                 if log < compact_bound {
@@ -263,11 +323,16 @@ impl KvStore {
                         let sz = get_size(&e);
                         let pointer = KvPointer { log, pos, sz };
                         if pointer
-                            == *self.map.get(&e.key).unwrap_or(&KvPointer {
-                                log: 0,
-                                pos: 0,
-                                sz: 0,
-                            })
+                            == *self
+                                .map
+                                .read()
+                                .map_err(|_| KvError::RwLock)?
+                                .get(&e.key)
+                                .unwrap_or(&KvPointer {
+                                    log: 0,
+                                    pos: 0,
+                                    sz: 0,
+                                })
                         {
                             self.write_log(&e)?;
                             self.add_index(e.key.clone())?;
@@ -277,7 +342,7 @@ impl KvStore {
                     fs::remove_file(file)?;
                 }
             }
-            self.uncompact = 0;
+            *self.uncompact.write().map_err(|_| KvError::RwLock)? = 0;
         }
         Ok(())
     }

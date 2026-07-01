@@ -1,4 +1,4 @@
-use std::{io, str};
+use std::{io, str, sync};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -19,4 +19,6 @@ pub enum KvError {
     File,
     #[error("Network stream error")]
     Network,
+    #[error("Failed to get lock")]
+    RwLock,
 }
