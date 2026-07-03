@@ -12,11 +12,11 @@
 use clap::{Parser, ValueEnum};
 use kvs::error::KvError;
 use kvs::protocol::{KvStream, StreamCommand};
-use kvs::{KvStore, KvsEngine, Result, SledKvsEngine, protocol};
+use kvs::{Engine, KvStore, Result, SledKvsEngine, protocol};
 use log::{LevelFilter, debug, info};
 use std::fs;
 use std::io::{BufRead, BufReader, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
 use std::process;
 
@@ -32,12 +32,12 @@ struct Args {
     addr: SocketAddr,
     /// Storage engine to use (kvs or sled)
     #[arg(long)]
-    engine: Option<Engine>,
+    engine: Option<EngineType>,
 }
 
 /// Storage engine type selection.
 #[derive(Clone, ValueEnum)]
-enum Engine {
+enum EngineType {
     /// log-structured key-value store
     Kvs,
     /// Sled embedded database
@@ -54,6 +54,7 @@ enum Engine {
 fn main() -> Result<()> {
     stderrlog::new()
         .module(module_path!())
+        .module("kvs")
         .show_module_names(true)
         .verbosity(LevelFilter::Debug)
         .init()?;
@@ -63,8 +64,8 @@ fn main() -> Result<()> {
         env!("CARGO_PKG_VERSION"),
         args.addr,
         match args.engine {
-            Some(Engine::Kvs) => "kvs",
-            Some(Engine::Sled) => "sled",
+            Some(EngineType::Kvs) => "kvs",
+            Some(EngineType::Sled) => "sled",
             _ => "kvs",
         }
     );
@@ -94,19 +95,27 @@ fn main() -> Result<()> {
     }
 
     // Initialize the appropriate storage engine
-    let mut kvs: Box<dyn KvsEngine> = match args.engine {
-        Some(Engine::Kvs) | None if !engine_exist.0 => Box::new(KvStore::open(&path)?),
-        Some(Engine::Sled) | None if !engine_exist.1 => Box::new(SledKvsEngine::open(&path)?),
+    let kvs = match args.engine {
+        Some(EngineType::Kvs) | None if !engine_exist.0 => Engine::Kvs(KvStore::open(&path)?),
+        Some(EngineType::Sled) | None if !engine_exist.1 => {
+            Engine::Sled(SledKvsEngine::open(&path)?)
+        }
         _ => {
-            eprintln!("Data was previously persisted with a different engine");
             process::exit(1);
         }
     };
 
     // Main server loop: accept and handle TCP connections
-    while let Some(tcp_stream) = listener.incoming().map_while(|x| x.ok()).next() {
+    while let Some(Ok(tcp_stream)) = listener.incoming().next() {
         info!("TCP connected: ok.");
-        let stream = BufReader::new(&tcp_stream);
+        server_worker(&kvs, tcp_stream)?;
+    }
+
+    Ok(())
+}
+
+fn server_worker(kvs: &Engine, tcp_stream: TcpStream) -> Result<()> {
+    let stream = BufReader::new(&tcp_stream);
         let mut iter = stream.lines();
         let mut tcp_stream = tcp_stream.try_clone()?;
 
@@ -163,6 +172,7 @@ fn main() -> Result<()> {
                         }
                     }
                     _ => {
+                        debug!("Here is continue");
                         tcp_stream.write_all(b"\n")?;
                         continue;
                     }
@@ -173,7 +183,5 @@ fn main() -> Result<()> {
                 // info!("Respone: ok.");
             }
         }
-    }
-
-    Ok(())
+        Ok(())
 }
