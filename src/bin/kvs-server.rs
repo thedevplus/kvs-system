@@ -12,6 +12,7 @@
 use clap::{Parser, ValueEnum};
 use kvs::error::KvError;
 use kvs::protocol::{KvStream, StreamCommand};
+use kvs::thread_pool::{NaiveThreadPool, ThreadPool};
 use kvs::{Engine, KvStore, Result, SledKvsEngine, protocol};
 use log::{LevelFilter, debug, info};
 use std::fs;
@@ -59,16 +60,6 @@ fn main() -> Result<()> {
         .verbosity(LevelFilter::Debug)
         .init()?;
     let args = Args::parse();
-    debug!(
-        "program: kvs-server, version: {}, address: {}, engine: {}",
-        env!("CARGO_PKG_VERSION"),
-        args.addr,
-        match args.engine {
-            Some(EngineType::Kvs) => "kvs",
-            Some(EngineType::Sled) => "sled",
-            _ => "kvs",
-        }
-    );
 
     let listener = TcpListener::bind(args.addr)?;
 
@@ -105,26 +96,43 @@ fn main() -> Result<()> {
         }
     };
 
+    debug!(
+        "program: kvs-server, version: {}, address: {}, engine: {}",
+        env!("CARGO_PKG_VERSION"),
+        args.addr,
+        match kvs {
+            Engine::Kvs(_) => "kvs",
+            Engine::Sled(_) => "sled",
+        }
+    );
+
+    let worker = NaiveThreadPool {};
+
     // Main server loop: accept and handle TCP connections
     while let Some(Ok(tcp_stream)) = listener.incoming().next() {
         info!("TCP connected: ok.");
-        server_worker(&kvs, tcp_stream)?;
+        // server_worker(&kvs, &tcp_stream)?;
+        let kvs = kvs.clone();
+        worker.spawn(move || {
+            let _ = server_worker(&kvs, &tcp_stream);
+        });
     }
 
     Ok(())
 }
 
-fn server_worker(kvs: &Engine, tcp_stream: TcpStream) -> Result<()> {
-    let stream = BufReader::new(&tcp_stream);
-        let mut iter = stream.lines();
-        let mut tcp_stream = tcp_stream.try_clone()?;
+fn server_worker(kvs: &Engine, tcp_stream: &TcpStream) -> Result<()> {
+    let stream = BufReader::new(tcp_stream);
+    let mut iter = stream.lines();
+    let mut tcp_stream = tcp_stream.try_clone()?;
 
-        // Process each command from the client
-        while let Some(Ok(stream)) = iter.next() {
-            let v = stream.as_bytes().to_owned();
-            if let Ok(kv_stream) = protocol::parse_protocol_stream(&v) {
-                // Handle command and prepare response
-                let stream = match kv_stream.command {
+    // Process each command from the client
+    while let Some(Ok(stream)) = iter.next() {
+        let v = stream.as_bytes().to_owned();
+        if let Ok(kv_stream) = protocol::parse_protocol_stream(&v) {
+            // Handle command and prepare response
+            let stream =
+                match kv_stream.command {
                     // Set command: store key-value pair
                     StreamCommand::St
                         if kvs
@@ -172,16 +180,15 @@ fn server_worker(kvs: &Engine, tcp_stream: TcpStream) -> Result<()> {
                         }
                     }
                     _ => {
-                        debug!("Here is continue");
                         tcp_stream.write_all(b"\n")?;
                         continue;
                     }
                 };
-                // Send response back to client
-                tcp_stream.write_all(&stream)?;
-                tcp_stream.write_all(b"\n")?;
-                // info!("Respone: ok.");
-            }
+            // Send response back to client
+            tcp_stream.write_all(&stream)?;
+            tcp_stream.write_all(b"\n")?;
+            // info!("Respone: ok.");
         }
-        Ok(())
+    }
+    Ok(())
 }
