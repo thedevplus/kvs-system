@@ -195,11 +195,12 @@ impl KvStore {
             .write()
             .map_err(|_| KvError::RwLock)?
             .write_all(b"\n")?;
-        *self.active.write().map_err(|_| KvError::RwLock)? = self
+        let active = self
             .active
             .read()
             .map_err(|_| KvError::RwLock)?
             .build_from(sz);
+        *self.active.write().map_err(|_| KvError::RwLock)? = active;
         // self.flag = true;
         Ok(())
     }
