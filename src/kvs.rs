@@ -171,35 +171,23 @@ impl KvStore {
     fn write_log(&self, log: &KvLog) -> Result<()> {
         let stream = self.stream_serialize(log)?;
         let sz = stream.len() as u64 + 1;
-        if self.active.read().map_err(|_| KvError::RwLock)?.pos
-            + self.active.read().map_err(|_| KvError::RwLock)?.sz
-            + sz
-            > LOG_FILE_SIZE
-        {
-            self.active.write().map_err(|_| KvError::RwLock)?.log += 1;
-            self.active.write().map_err(|_| KvError::RwLock)?.pos = 0;
-            self.active.write().map_err(|_| KvError::RwLock)?.sz = 0;
-            *self.writer.write().map_err(|_| KvError::RwLock)? =
-                BufWriter::new(OpenOptions::new().create(true).append(true).open(
-                    number_convert_to_log_path(
-                        self.path.read().map_err(|_| KvError::RwLock)?.as_path(),
-                        self.active.read().map_err(|_| KvError::RwLock)?.log,
-                    ),
-                )?);
+        let active = self.active.read().map_err(|_| KvError::RwLock)?.clone();
+        let mut writer = self.writer.write().map_err(|_| KvError::RwLock)?;
+        if active.pos + active.sz + sz > LOG_FILE_SIZE {
+            let mut active = self.active.write().map_err(|_| KvError::RwLock)?;
+            active.log += 1;
+            active.pos = 0;
+            active.sz = 0;
+            *writer = BufWriter::new(OpenOptions::new().create(true).append(true).open(
+                number_convert_to_log_path(
+                    self.path.read().map_err(|_| KvError::RwLock)?.as_path(),
+                    active.log,
+                ),
+            )?);
         }
-        self.writer
-            .write()
-            .map_err(|_| KvError::RwLock)?
-            .write_all(&stream)?;
-        self.writer
-            .write()
-            .map_err(|_| KvError::RwLock)?
-            .write_all(b"\n")?;
-        let active = self
-            .active
-            .read()
-            .map_err(|_| KvError::RwLock)?
-            .build_from(sz);
+        writer.write_all(&stream)?;
+        writer.write_all(b"\n")?;
+        let active = active.build_from(sz);
         *self.active.write().map_err(|_| KvError::RwLock)? = active;
         // self.flag = true;
         Ok(())
@@ -279,6 +267,7 @@ impl KvStore {
                 log,
                 Arc::new(RwLock::new(BufReader::new(File::open(file)?))),
             );
+            let mut uncompact = self.uncompact.write().map_err(|_| KvError::RwLock)?;
             serde_json::Deserializer::from_reader(
                 self.reader
                     .read()
@@ -296,12 +285,12 @@ impl KvStore {
                 let pointer = KvPointer { log, pos, sz };
                 if let KvCommand::Set = e.command {
                     if self.map.read().unwrap().contains_key(&e.key) {
-                        *self.uncompact.write().unwrap() += 1;
+                        *uncompact += 1;
                     }
                     self.map.write().unwrap().insert(e.key, pointer.clone());
                 } else {
                     self.map.write().unwrap().remove(&e.key);
-                    *self.uncompact.write().unwrap() += 1;
+                    *uncompact += 1;
                 }
                 *self.active.write().unwrap() = pointer;
                 pos += sz;
