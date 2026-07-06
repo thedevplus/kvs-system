@@ -40,8 +40,8 @@ impl Engine {
 impl Clone for Engine {
     fn clone(&self) -> Self {
         match self {
-            Engine::Kvs(kvs) => Engine::Kvs(KvStore::clone(kvs)),
-            Engine::Sled(sled) => Engine::Sled(SledKvsEngine::clone(sled)),
+            Engine::Kvs(kvs) => Engine::Kvs(kvs.clone()),
+            Engine::Sled(sled) => Engine::Sled(sled.clone()),
         }
     }
 }

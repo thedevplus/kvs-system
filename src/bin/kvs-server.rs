@@ -12,7 +12,7 @@
 use clap::{Parser, ValueEnum};
 use kvs::error::KvError;
 use kvs::protocol::{KvStream, StreamCommand};
-use kvs::thread_pool::{NaiveThreadPool, ThreadPool};
+use kvs::thread_pool::{SharedQueueThreadPool, ThreadPool};
 use kvs::{Engine, KvStore, Result, SledKvsEngine, protocol};
 use log::{LevelFilter, debug, info};
 use std::fs;
@@ -106,14 +106,14 @@ fn main() -> Result<()> {
         }
     );
 
-    let worker = NaiveThreadPool {};
+    let workers = SharedQueueThreadPool::new(8)?;
 
     // Main server loop: accept and handle TCP connections
     while let Some(Ok(tcp_stream)) = listener.incoming().next() {
         info!("TCP connected: ok.");
         // server_worker(&kvs, &tcp_stream)?;
         let kvs = kvs.clone();
-        worker.spawn(move || {
+        workers.spawn(move || {
             let _ = server_worker(&kvs, &tcp_stream);
         });
     }
