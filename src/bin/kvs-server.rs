@@ -15,11 +15,11 @@ use kvs::protocol::{KvStream, StreamCommand};
 use kvs::thread_pool::{SharedQueueThreadPool, ThreadPool};
 use kvs::{Engine, KvStore, Result, SledKvsEngine, protocol};
 use log::{LevelFilter, debug, info};
-use std::fs;
+use num_cpus;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
-use std::process;
+use std::{fs, process};
 
 /// Directory name for storing log files
 const LOG_FILE_DIR: &str = "database";
@@ -96,17 +96,23 @@ fn main() -> Result<()> {
         }
     };
 
+    let cpu_num = num_cpus::get();
+    if cpu_num < 2 {
+        eprintln!("Your hardware currently is not available for running server process.");
+        process::exit(1);
+    }
+    let workers = SharedQueueThreadPool::new(cpu_num as u32)?;
+
     debug!(
-        "program: kvs-server, version: {}, address: {}, engine: {}",
+        "program: kvs-server, version: {}, address: {}, engine: {}, threads: {}",
         env!("CARGO_PKG_VERSION"),
         args.addr,
         match kvs {
             Engine::Kvs(_) => "kvs",
             Engine::Sled(_) => "sled",
-        }
+        },
+        cpu_num
     );
-
-    let workers = SharedQueueThreadPool::new(8)?;
 
     // Main server loop: accept and handle TCP connections
     while let Some(Ok(tcp_stream)) = listener.incoming().next() {

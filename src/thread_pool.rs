@@ -1,6 +1,10 @@
-use std::thread::{self, JoinHandle};
 use crate::Result;
 use crossbeam_channel::{self, Sender};
+use std::panic;
+use std::sync::Mutex;
+use std::thread::{self, JoinHandle};
+use std::rc::Rc;
+use std::cell::RefCell;
 pub trait ThreadPool {
     fn new(threads: u32) -> Result<impl ThreadPool>;
 
@@ -41,21 +45,34 @@ impl ThreadPool for SharedQueueThreadPool {
             send: sender,
             work: Vec::new(),
         };
-    (0..threads).into_iter().for_each(|_| {
-        let r = receiver.clone();
-        thread_pool.work.push(thread::spawn(move || {
-        while let Ok(ThreadPoolMessage::RunJob(thread)) = r.recv() {
-            thread();
-        }
-    }))});
+        (0..threads).for_each(|_| {
+            let receiver = receiver.clone();
+            thread_pool.work.push(thread::spawn(move || {
+                let shutdown = Rc::new(Mutex::new(false));
+                while !*shutdown.lock().unwrap() {
+                    let Ok(_) = panic::catch_unwind(|| {
+                        if let Ok(ThreadPoolMessage::RunJob(thread)) = receiver.recv() {
+                            thread();
+                        } else {
+                            *shutdown.lock().unwrap() = true;
+                        }
+                    }) else {
+                        eprintln!("Caution: Thread panic");
+                        continue;
+                    };
+                }
+            }));
+        });
 
-    Ok(thread_pool)
+        Ok(thread_pool)
     }
 
     fn spawn<F>(&self, job: F)
     where
-        F: FnOnce() + Send + 'static
+        F: FnOnce() + Send + 'static,
     {
-        self.send.send(ThreadPoolMessage::RunJob(Box::new(job))).unwrap();
+        self.send
+            .send(ThreadPoolMessage::RunJob(Box::new(job)))
+            .unwrap();
     }
 }

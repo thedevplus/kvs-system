@@ -18,7 +18,10 @@ use std::collections::HashMap;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, Mutex, RwLock};
+use std::thread::JoinHandle;
+use std::time::Duration;
+use std::{process, thread};
 // use std::time::SystemTime;
 
 /// File extension for log files
@@ -37,6 +40,7 @@ pub struct KvStore {
     reader: MultiSafeHashMap,
     map: Arc<RwLock<HashMap<String, KvPointer>>>,
     uncompact: Arc<RwLock<u64>>,
+    maintain: Arc<Mutex<Option<JoinHandle<()>>>>,
     // flag: bool,
 }
 
@@ -71,6 +75,7 @@ impl Clone for KvStore {
             reader: Arc::clone(&self.reader),
             map: Arc::clone(&self.map),
             uncompact: Arc::clone(&self.uncompact),
+            maintain: Arc::clone(&self.maintain),
         }
     }
 }
@@ -84,7 +89,7 @@ impl KvsEngine for KvStore {
         let kv_log = KvLog::build_from(KvCommand::Set, key.clone(), Some(value));
         self.write_log(&kv_log)?;
         self.add_index(key)?;
-        self.start_compact()?;
+        // self.start_compact()?;
         self.writer.write().map_err(|_| KvError::RwLock)?.flush()?;
         Ok(())
     }
@@ -124,13 +129,23 @@ impl KvsEngine for KvStore {
             let kv_log = KvLog::build_from(KvCommand::Rm, key.clone(), None);
             self.write_log(&kv_log)?;
             self.delete_index(key)?;
-            self.start_compact()?;
+            // self.start_compact()?;
             self.writer.write().map_err(|_| KvError::RwLock)?.flush()?;
             Ok(())
         } else {
             // eprintln!("Key not found");
             Err(KvError::Log)
         }
+    }
+}
+
+impl Drop for KvStore {
+    fn drop(&mut self) {
+        if let Ok(mut thread) = self.maintain.lock()
+            && let Some(handle) = thread.take()
+        {
+            handle.join().unwrap();
+        };
     }
 }
 
@@ -154,6 +169,7 @@ impl KvStore {
             path: Arc::new(RwLock::new(path.clone())),
             active: Arc::new(RwLock::new(KvPointer::new())),
             uncompact: Arc::new(RwLock::new(0)),
+            maintain: Arc::new(Mutex::new(None)),
             // flag: false,
         };
         kvs.start_build_map_and_reader()?;
@@ -165,6 +181,12 @@ impl KvStore {
                     kvs.active.read().map_err(|_| KvError::RwLock)?.log,
                 ))?,
         );
+        let compact_kvs = kvs.clone();
+        *kvs.maintain.lock().map_err(|_| KvError::RwLock)? = Some(thread::spawn(move || {
+            if let Ok(_) = compact_kvs.start_compact() {
+                ()
+            }
+        }));
         Ok(kvs)
     }
 
@@ -187,7 +209,11 @@ impl KvStore {
         }
         writer.write_all(&stream)?;
         writer.write_all(b"\n")?;
-        let active = active.build_from(sz);
+        let active = self
+            .active
+            .read()
+            .map_err(|_| KvError::RwLock)?
+            .build_from(sz);
         *self.active.write().map_err(|_| KvError::RwLock)? = active;
         // self.flag = true;
         Ok(())
@@ -300,7 +326,9 @@ impl KvStore {
     }
 
     fn start_compact(&self) -> Result<()> {
-        if *self.uncompact.read().map_err(|_| KvError::RwLock)? > LOG_UNCOMPACT {
+        println!("Into Compact");
+        while *self.uncompact.read().map_err(|_| KvError::RwLock)? >= LOG_UNCOMPACT {
+            println!("Compact Started");
             let compact_bound = self.active.read().map_err(|_| KvError::RwLock)?.log;
             for e in self.read_directory_and_sort()?.iter() {
                 let log = e.0;
