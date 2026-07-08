@@ -1,10 +1,9 @@
 use crate::Result;
 use crossbeam_channel::{self, Sender};
 use std::panic;
+use std::rc::Rc;
 use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
-use std::rc::Rc;
-use std::cell::RefCell;
 pub trait ThreadPool {
     fn new(threads: u32) -> Result<impl ThreadPool>;
 

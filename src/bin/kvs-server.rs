@@ -15,7 +15,6 @@ use kvs::protocol::{KvStream, StreamCommand};
 use kvs::thread_pool::{SharedQueueThreadPool, ThreadPool};
 use kvs::{Engine, KvStore, Result, SledKvsEngine, protocol};
 use log::{LevelFilter, debug, info};
-use num_cpus;
 use std::io::{BufRead, BufReader, Write};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
