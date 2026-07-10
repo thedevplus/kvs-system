@@ -4,6 +4,7 @@ use std::panic;
 use std::rc::Rc;
 use std::sync::Mutex;
 use std::thread::{self, JoinHandle};
+
 pub trait ThreadPool {
     fn new(threads: u32) -> Result<impl ThreadPool>;
 
@@ -32,7 +33,7 @@ pub struct SharedQueueThreadPool {
     work: Vec<JoinHandle<()>>,
 }
 
-enum ThreadPoolMessage {
+pub enum ThreadPoolMessage {
     RunJob(Box<dyn FnOnce() + Send + 'static>),
     Shutdown,
 }
@@ -56,7 +57,6 @@ impl ThreadPool for SharedQueueThreadPool {
                             *shutdown.lock().unwrap() = true;
                         }
                     }) else {
-                        eprintln!("Caution: Thread panic");
                         continue;
                     };
                 }
@@ -73,5 +73,15 @@ impl ThreadPool for SharedQueueThreadPool {
         self.send
             .send(ThreadPoolMessage::RunJob(Box::new(job)))
             .unwrap();
+    }
+}
+
+impl Drop for SharedQueueThreadPool {
+    fn drop(&mut self) {
+        let (sender, _) = crossbeam_channel::unbounded();
+        self.send = sender;
+        while let Some(handle) = self.work.pop() {
+            handle.join().unwrap();
+        }
     }
 }

@@ -20,6 +20,7 @@ use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
+use std::time::Duration;
 // use std::time::SystemTime;
 
 /// File extension for log files
@@ -90,7 +91,7 @@ impl KvsEngine for KvStore {
         // self.start_compact()?;
         self.writer
             .try_write()
-            .map_err(|_| KvError::RwLock)?
+            .map_err(|_| KvError::Lock)?
             .flush()?;
         Ok(())
     }
@@ -122,7 +123,7 @@ impl KvsEngine for KvStore {
     /// Returns an error if the key does not exist.
     fn remove(&self, key: String) -> Result<()> {
         let execute = {
-            if let Ok(map) = self.map.try_read().map_err(|_| KvError::RwLock) {
+            if let Ok(map) = self.map.try_read().map_err(|_| KvError::Lock) {
                 map.contains_key(&key)
             } else {
                 true
@@ -136,8 +137,10 @@ impl KvsEngine for KvStore {
             // self.start_compact()?;
             self.writer
                 .try_write()
-                .map_err(|_| KvError::RwLock)?
+                .map_err(|_| KvError::Lock)?
                 .flush()?;
+        } else {
+            return Err(KvError::Log);
         }
 
         Ok(())
@@ -146,11 +149,16 @@ impl KvsEngine for KvStore {
 
 impl Drop for KvStore {
     fn drop(&mut self) {
-        if let Ok(mut thread) = self.maintain.lock()
-            && let Some(handle) = thread.take()
-        {
-            handle.join().unwrap();
-        };
+        if Arc::strong_count(&self.maintain) == 1 {
+            if let Ok(mut uncompact) = self.uncompact.write() {
+                *uncompact = u64::MAX;
+            }
+            if let Ok(mut thread) = self.maintain.lock()
+                && let Some(handle) = thread.take()
+            {
+                handle.join().unwrap();
+            };
+        }
     }
 }
 
@@ -162,7 +170,7 @@ impl KvStore {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
         directory_initial(&path)?;
-        let kvs = Self {
+        let mut kvs = Self {
             writer: Arc::new(RwLock::new(BufWriter::new(
                 OpenOptions::new()
                     .create(true)
@@ -178,36 +186,33 @@ impl KvStore {
             // flag: false,
         };
         kvs.start_build_map_and_reader()?;
-        *kvs.writer.write().map_err(|_| KvError::RwLock)? = BufWriter::new(
+        kvs.writer = Arc::new(RwLock::new(BufWriter::new(
             OpenOptions::new()
                 .append(true)
                 .open(number_convert_to_log_path(
                     &path,
-                    kvs.active.read().map_err(|_| KvError::RwLock)?.log,
+                    kvs.active.read().map_err(|_| KvError::Lock)?.log,
                 ))?,
-        );
+        )));
         let compact_kvs = kvs.clone();
-        *kvs.maintain.lock().map_err(|_| KvError::RwLock)? =
-            Some(thread::spawn(
-                move || {
-                    if compact_kvs.start_compact().is_ok() {}
-                },
-            ));
+        kvs.maintain = Arc::new(Mutex::new(Some(thread::spawn(move || {
+            if compact_kvs.start_compact().is_ok() {}
+        }))));
         Ok(kvs)
     }
 
     fn write_log(&self, log: &KvLog) -> Result<KvPointer> {
         let stream = self.stream_serialize(log)?;
         let sz = stream.len() as u64 + 1;
-        let mut active = self.active.write().map_err(|_| KvError::RwLock)?;
-        let mut writer = self.writer.write().map_err(|_| KvError::RwLock)?;
+        let mut active = self.active.write().map_err(|_| KvError::Lock)?;
+        let mut writer = self.writer.write().map_err(|_| KvError::Lock)?;
         if active.pos + active.sz + sz > LOG_FILE_SIZE {
             active.log += 1;
             active.pos = 0;
             active.sz = 0;
             *writer = BufWriter::new(OpenOptions::new().create(true).append(true).open(
                 number_convert_to_log_path(
-                    self.path.read().map_err(|_| KvError::RwLock)?.as_path(),
+                    self.path.read().map_err(|_| KvError::Lock)?.as_path(),
                     active.log,
                 ),
             )?);
@@ -220,16 +225,16 @@ impl KvStore {
     }
 
     fn read_log(&self, key: &String) -> Result<KvLog> {
-        let current_map = self.map.read().map_err(|_| KvError::RwLock)?;
+        let current_map = self.map.read().map_err(|_| KvError::Lock)?;
         let Some(p) = current_map.get(key) else {
             return Err(KvError::Log);
         };
-        let current_reader = self.reader.read().map_err(|_| KvError::RwLock)?;
+        let current_reader = self.reader.read().map_err(|_| KvError::Lock)?;
         let mut reader = current_reader
             .get(&p.log)
             .ok_or(KvError::File)?
             .write()
-            .map_err(|_| KvError::RwLock)?;
+            .map_err(|_| KvError::Lock)?;
         let mut data = vec![0u8; p.sz as usize];
         reader.seek(SeekFrom::Start(p.pos))?;
         reader.read_exact(&mut data)?;
@@ -249,18 +254,18 @@ impl KvStore {
         let None = self
             .map
             .write()
-            .map_err(|_| KvError::RwLock)?
+            .map_err(|_| KvError::Lock)?
             .insert(key, pointer)
         else {
-            *self.uncompact.write().map_err(|_| KvError::RwLock)? += 1;
+            *self.uncompact.write().map_err(|_| KvError::Lock)? += 1;
             return Ok(());
         };
         Ok(())
     }
 
     fn delete_index(&self, key: String) -> Result<()> {
-        let mut map = self.map.write().map_err(|_| KvError::RwLock)?;
-        let mut uncompact = self.uncompact.write().map_err(|_| KvError::RwLock)?;
+        let mut map = self.map.write().map_err(|_| KvError::Lock)?;
+        let mut uncompact = self.uncompact.write().map_err(|_| KvError::Lock)?;
         *uncompact += 1;
         if map.remove(&key).is_some() {
             Ok(())
@@ -272,8 +277,7 @@ impl KvStore {
 
     fn read_directory_and_sort(&self) -> Result<Vec<(u64, PathBuf)>> {
         let mut dir_files = Vec::new();
-        for entry in
-            fs::read_dir(self.path.read().map_err(|_| KvError::RwLock)?.as_path())?.flatten()
+        for entry in fs::read_dir(self.path.read().map_err(|_| KvError::Lock)?.as_path())?.flatten()
         {
             let entry = entry.path();
             let file = entry
@@ -297,10 +301,10 @@ impl KvStore {
             let mut pos = 0u64;
             let mut sz = 0u64;
             let file = &e.1;
-            let mut active = self.active.write().map_err(|_| KvError::RwLock)?;
-            let mut map = self.map.write().map_err(|_| KvError::RwLock)?;
-            let mut reader = self.reader.write().map_err(|_| KvError::RwLock)?;
-            let mut uncompact = self.uncompact.write().map_err(|_| KvError::RwLock)?;
+            let mut active = self.active.write().map_err(|_| KvError::Lock)?;
+            let mut map = self.map.write().map_err(|_| KvError::Lock)?;
+            let mut reader = self.reader.write().map_err(|_| KvError::Lock)?;
+            let mut uncompact = self.uncompact.write().map_err(|_| KvError::Lock)?;
             reader.insert(
                 log,
                 Arc::new(RwLock::new(BufReader::new(File::open(file)?))),
@@ -310,7 +314,7 @@ impl KvStore {
                     .get(&log)
                     .ok_or(KvError::File)?
                     .read()
-                    .map_err(|_| KvError::RwLock)?
+                    .map_err(|_| KvError::Lock)?
                     .get_ref(),
             )
             .into_iter::<KvLog>()
@@ -337,15 +341,16 @@ impl KvStore {
     fn start_compact(&self) -> Result<()> {
         loop {
             let uncompact = {
-                let Ok(uncompact) = self.uncompact.try_read().map_err(|_| KvError::RwLock) else {
+                let Ok(uncompact) = self.uncompact.try_read().map_err(|_| KvError::Lock) else {
                     continue;
                 };
                 *uncompact
             };
-            if uncompact >= LOG_UNCOMPACT {
+            if uncompact == u64::MAX {
+                break;
+            } else if uncompact >= LOG_UNCOMPACT {
                 let compact_bound = {
-                    let Ok(compuact_bound_lock) =
-                        self.active.try_read().map_err(|_| KvError::RwLock)
+                    let Ok(compuact_bound_lock) = self.active.try_read().map_err(|_| KvError::Lock)
                     else {
                         continue;
                     };
@@ -369,7 +374,7 @@ impl KvStore {
                                 sz: 0,
                             };
                             loop {
-                                if let Ok(map) = self.map.try_read().map_err(|_| KvError::RwLock) {
+                                if let Ok(map) = self.map.try_read().map_err(|_| KvError::Lock) {
                                     if let Some(pointer) = map.get(&e.key) {
                                         map_pointer = pointer.clone();
                                     }
@@ -385,10 +390,13 @@ impl KvStore {
                         fs::remove_file(file)?;
                     }
                 }
-                *self.uncompact.write().map_err(|_| KvError::RwLock)? = 0;
+                *self.uncompact.write().map_err(|_| KvError::Lock)? = 0;
             }
+
+            thread::sleep(Duration::from_secs(1));
         }
-        // Ok(())
+
+        Ok(())
     }
 }
 

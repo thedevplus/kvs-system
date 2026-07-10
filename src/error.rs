@@ -20,5 +20,5 @@ pub enum KvError {
     #[error("Network stream error")]
     Network,
     #[error("Failed to get lock")]
-    RwLock,
+    Lock,
 }

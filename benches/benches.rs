@@ -7,15 +7,15 @@ use std::io::{BufReader, BufWriter, Write};
 fn bench_write(c: &mut Criterion) -> Result<()> {
     let mut data = Vec::with_capacity(100usize);
     let kvs = KvStore::open("./benches-data")?;
-    //let sled = SledKvsEngine::open("./benches-data")?;
+    let sled = SledKvsEngine::open("./benches-data")?;
     let mut key = String::new();
     let mut value = String::new();
 
     key.clear();
     value.clear();
-    for i in 1..=100 {
-        key = format!("Key{i}"); //Alphanumeric.sample_string(&mut rand::rng(), rand::random_range(1..=100000));
-        value = "value".to_string(); //Alphanumeric.sample_string(&mut rand::rng(), rand::random_range(1..=100000));
+    for _ in 1..=100 {
+        key = Alphanumeric.sample_string(&mut rand::rng(), rand::random_range(1..=100000));
+        value = Alphanumeric.sample_string(&mut rand::rng(), rand::random_range(1..=100000));
         key.shrink_to_fit();
         value.shrink_to_fit();
         data.push((key, value));
@@ -44,7 +44,6 @@ fn bench_write(c: &mut Criterion) -> Result<()> {
             }
         });
     });
-    /*
     group.bench_with_input(BenchmarkId::new("sled", "set-rm-set"), &data, |b, d| {
         b.iter(|| {
             for e in d {
@@ -58,14 +57,13 @@ fn bench_write(c: &mut Criterion) -> Result<()> {
             }
         });
     });
-    */
     group.finish();
     Ok(())
 }
 
 fn bench_read(c: &mut Criterion) -> Result<()> {
     let kvs = KvStore::open("./benches-data")?;
-    //let sled = SledKvsEngine::open("./benches-data")?;
+    let sled = SledKvsEngine::open("./benches-data")?;
     let file = BufReader::new(File::open("./benches-data/data")?);
     let data = serde_json::Deserializer::from_reader(file)
         .into_iter::<Vec<(String, String)>>()
@@ -90,7 +88,6 @@ fn bench_read(c: &mut Criterion) -> Result<()> {
             }
         });
     });
-    /*
     group.bench_with_input(BenchmarkId::new("sled", "get-order"), &data, |b, d| {
         b.iter(|| {
             let mut count = 1u8;
@@ -102,7 +99,6 @@ fn bench_read(c: &mut Criterion) -> Result<()> {
             }
         });
     });
-    */
     group.bench_with_input(BenchmarkId::new("kvs", "get-disorder"), &arg, |b, d| {
         b.iter(|| {
             let mut count = 1u8;
@@ -119,7 +115,6 @@ fn bench_read(c: &mut Criterion) -> Result<()> {
             }
         });
     });
-    /*
     group.bench_with_input(BenchmarkId::new("sled", "get-disorder"), &arg, |b, d| {
         b.iter(|| {
             let mut count = 1u8;
@@ -136,7 +131,6 @@ fn bench_read(c: &mut Criterion) -> Result<()> {
             }
         });
     });
-    */
     group.finish();
     Ok(())
 }
