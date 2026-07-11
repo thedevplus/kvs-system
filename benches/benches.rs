@@ -58,6 +58,7 @@ fn bench_write(c: &mut Criterion) -> Result<()> {
         });
     });
     group.finish();
+    println!("All is ok");
     Ok(())
 }
 
@@ -132,6 +133,7 @@ fn bench_read(c: &mut Criterion) -> Result<()> {
         });
     });
     group.finish();
+    println!("All is ok");
     Ok(())
 }
 

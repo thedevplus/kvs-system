@@ -149,6 +149,7 @@ impl KvsEngine for KvStore {
 
 impl Drop for KvStore {
     fn drop(&mut self) {
+        println!("KvStore drop begin");
         if Arc::strong_count(&self.maintain) == 1 {
             if let Ok(mut uncompact) = self.uncompact.write() {
                 *uncompact = u64::MAX;
@@ -156,9 +157,11 @@ impl Drop for KvStore {
             if let Ok(mut thread) = self.maintain.lock()
                 && let Some(handle) = thread.take()
             {
+                println!("KvStore dropping");
                 handle.join().unwrap();
             };
         }
+        println!("KvStore drop finish");
     }
 }
 
@@ -186,14 +189,14 @@ impl KvStore {
             // flag: false,
         };
         kvs.start_build_map_and_reader()?;
-        kvs.writer = Arc::new(RwLock::new(BufWriter::new(
+        *kvs.writer.write().map_err(|_| KvError::Lock)? = BufWriter::new(
             OpenOptions::new()
                 .append(true)
                 .open(number_convert_to_log_path(
                     &path,
                     kvs.active.read().map_err(|_| KvError::Lock)?.log,
                 ))?,
-        )));
+        );
         let compact_kvs = kvs.clone();
         kvs.maintain = Arc::new(Mutex::new(Some(thread::spawn(move || {
             if compact_kvs.start_compact().is_ok() {}
@@ -340,6 +343,7 @@ impl KvStore {
 
     fn start_compact(&self) -> Result<()> {
         loop {
+            println!("A new compact loop");
             let uncompact = {
                 let Ok(uncompact) = self.uncompact.try_read().map_err(|_| KvError::Lock) else {
                     continue;

@@ -112,15 +112,28 @@ fn main() -> Result<()> {
         },
         cpu_num
     );
+    let mut count = 0usize;
 
     // Main server loop: accept and handle TCP connections
     while let Some(Ok(tcp_stream)) = listener.incoming().next() {
         info!("TCP connected: ok.");
         // server_worker(&kvs, &tcp_stream)?;
-        let kvs = kvs.clone();
-        workers.spawn(move || {
-            let _ = server_worker(&kvs, &tcp_stream);
-        });
+        if count < 3 || (count < 6 && count > 3) {
+            let kvs = kvs.clone();
+            let tcp_stream = tcp_stream.try_clone()?;
+            workers.spawn(move || {
+                let _ = server_worker(&kvs, &tcp_stream);
+            });
+            count += 1;
+        } else if count == 3 {
+            workers.spawn(move || {
+                panic!("Panic test!!!!!!");
+            });
+            count += 1;
+        } else {
+            workers.shutdown();
+            break;
+        }
     }
 
     Ok(())

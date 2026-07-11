@@ -1,8 +1,7 @@
 use crate::Result;
 use crossbeam_channel::{self, Sender};
 use std::panic;
-use std::rc::Rc;
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
 
 pub trait ThreadPool {
@@ -11,6 +10,8 @@ pub trait ThreadPool {
     fn spawn<F>(&self, job: F)
     where
         F: FnOnce() + Send + 'static;
+
+    fn shutdown(&self) {}
 }
 
 pub struct NaiveThreadPool {}
@@ -33,7 +34,7 @@ pub struct SharedQueueThreadPool {
     work: Vec<JoinHandle<()>>,
 }
 
-pub enum ThreadPoolMessage {
+enum ThreadPoolMessage {
     RunJob(Box<dyn FnOnce() + Send + 'static>),
     Shutdown,
 }
@@ -45,17 +46,20 @@ impl ThreadPool for SharedQueueThreadPool {
             send: sender,
             work: Vec::new(),
         };
+        let shutdown = Arc::new(Mutex::new(false));
         (0..threads).for_each(|_| {
             let receiver = receiver.clone();
+            let shutdown = Arc::clone(&shutdown);
             thread_pool.work.push(thread::spawn(move || {
-                let shutdown = Rc::new(Mutex::new(false));
                 while !*shutdown.lock().unwrap() {
-                    let Ok(_) = panic::catch_unwind(|| {
-                        if let Ok(ThreadPoolMessage::RunJob(thread)) = receiver.recv() {
+                    let Ok(_) = panic::catch_unwind(|| match receiver.recv() {
+                        Ok(ThreadPoolMessage::RunJob(thread)) => {
                             thread();
-                        } else {
+                        }
+                        Ok(ThreadPoolMessage::Shutdown) => {
                             *shutdown.lock().unwrap() = true;
                         }
+                        Err(_) => (),
                     }) else {
                         continue;
                     };
@@ -73,6 +77,10 @@ impl ThreadPool for SharedQueueThreadPool {
         self.send
             .send(ThreadPoolMessage::RunJob(Box::new(job)))
             .unwrap();
+    }
+
+    fn shutdown(&self) {
+        self.send.send(ThreadPoolMessage::Shutdown).unwrap();
     }
 }
 
