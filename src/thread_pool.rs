@@ -1,4 +1,5 @@
 use crate::Result;
+use crate::error::KvError;
 use crossbeam_channel::{self, Sender};
 use std::panic;
 use std::sync::{Arc, Mutex};
@@ -56,10 +57,9 @@ impl ThreadPool for SharedQueueThreadPool {
                         Ok(ThreadPoolMessage::RunJob(thread)) => {
                             thread();
                         }
-                        Ok(ThreadPoolMessage::Shutdown) => {
+                        _ => {
                             *shutdown.lock().unwrap() = true;
                         }
-                        Err(_) => (),
                     }) else {
                         continue;
                     };
@@ -74,13 +74,26 @@ impl ThreadPool for SharedQueueThreadPool {
     where
         F: FnOnce() + Send + 'static,
     {
-        self.send
+        if self
+            .send
             .send(ThreadPoolMessage::RunJob(Box::new(job)))
-            .unwrap();
+            .is_ok()
+        {
+        } else {
+            eprintln!("Threads try to shutdown and process is aborted");
+        };
     }
 
     fn shutdown(&self) {
-        self.send.send(ThreadPoolMessage::Shutdown).unwrap();
+        let mut busy = false;
+        for _ in 0..self.work.len() {
+            while self.send.try_send(ThreadPoolMessage::Shutdown).is_err() {
+                busy = true;
+            }
+            if busy {
+                break;
+            }
+        }
     }
 }
 
@@ -89,7 +102,31 @@ impl Drop for SharedQueueThreadPool {
         let (sender, _) = crossbeam_channel::unbounded();
         self.send = sender;
         while let Some(handle) = self.work.pop() {
-            handle.join().unwrap();
+            let _ = handle.join();
         }
+    }
+}
+
+pub struct RayonThreadPool {
+    threadpool: rayon::ThreadPool,
+}
+
+impl ThreadPool for RayonThreadPool {
+    fn new(threads: u32) -> Result<impl ThreadPool> {
+        let Ok(threadpool) = rayon::ThreadPoolBuilder::new()
+            .num_threads(threads as usize)
+            .build()
+        else {
+            return Err(KvError::Log);
+        };
+
+        Ok(RayonThreadPool { threadpool })
+    }
+
+    fn spawn<F>(&self, job: F)
+    where
+        F: FnOnce() + Send + 'static,
+    {
+        self.threadpool.spawn(job);
     }
 }
