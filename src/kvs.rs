@@ -21,6 +21,7 @@ use std::path::PathBuf;
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+// use log::{LevelFilter, debug};
 // use std::time::SystemTime;
 
 /// File extension for log files
@@ -89,10 +90,7 @@ impl KvsEngine for KvStore {
         let pointer = self.write_log(&kv_log)?;
         self.add_index(key, pointer)?;
         // self.start_compact()?;
-        self.writer
-            .try_write()
-            .map_err(|_| KvError::Lock)?
-            .flush()?;
+        self.flush_writer()?;
         Ok(())
     }
 
@@ -135,10 +133,7 @@ impl KvsEngine for KvStore {
             self.write_log(&kv_log)?;
             self.delete_index(key)?;
             // self.start_compact()?;
-            self.writer
-                .try_write()
-                .map_err(|_| KvError::Lock)?
-                .flush()?;
+            self.flush_writer()?;
         } else {
             return Err(KvError::Log);
         }
@@ -149,7 +144,6 @@ impl KvsEngine for KvStore {
 
 impl Drop for KvStore {
     fn drop(&mut self) {
-        println!("KvStore drop begin");
         if Arc::strong_count(&self.maintain) == 1 {
             if let Ok(mut uncompact) = self.uncompact.write() {
                 *uncompact = u64::MAX;
@@ -157,11 +151,9 @@ impl Drop for KvStore {
             if let Ok(mut thread) = self.maintain.lock()
                 && let Some(handle) = thread.take()
             {
-                println!("KvStore dropping");
                 handle.join().unwrap();
             };
         }
-        println!("KvStore drop finish");
     }
 }
 
@@ -173,6 +165,7 @@ impl KvStore {
     pub fn open(path: impl Into<PathBuf>) -> Result<Self> {
         let path = path.into();
         directory_initial(&path)?;
+
         let mut kvs = Self {
             writer: Arc::new(RwLock::new(BufWriter::new(
                 OpenOptions::new()
@@ -188,19 +181,21 @@ impl KvStore {
             maintain: Arc::new(Mutex::new(None)),
             // flag: false,
         };
+
         kvs.start_build_map_and_reader()?;
-        *kvs.writer.write().map_err(|_| KvError::Lock)? = BufWriter::new(
+        kvs.writer = Arc::new(RwLock::new(BufWriter::new(
             OpenOptions::new()
                 .append(true)
                 .open(number_convert_to_log_path(
                     &path,
                     kvs.active.read().map_err(|_| KvError::Lock)?.log,
                 ))?,
-        );
+        )));
         let compact_kvs = kvs.clone();
         kvs.maintain = Arc::new(Mutex::new(Some(thread::spawn(move || {
             if compact_kvs.start_compact().is_ok() {}
         }))));
+
         Ok(kvs)
     }
 
@@ -278,6 +273,19 @@ impl KvStore {
         }
     }
 
+    fn flush_writer(&self) -> Result<()> {
+        loop {
+            if let Ok(mut buf) = self.writer.try_write().map_err(|_| KvError::Lock) {
+                buf.flush()?;
+                break;
+            } else {
+                continue;
+            }
+        }
+
+        Ok(())
+    }
+
     fn read_directory_and_sort(&self) -> Result<Vec<(u64, PathBuf)>> {
         let mut dir_files = Vec::new();
         for entry in fs::read_dir(self.path.read().map_err(|_| KvError::Lock)?.as_path())?.flatten()
@@ -312,8 +320,11 @@ impl KvStore {
                 log,
                 Arc::new(RwLock::new(BufReader::new(File::open(file)?))),
             );
+            drop(reader);
             serde_json::Deserializer::from_reader(
-                reader
+                self.reader
+                    .read()
+                    .map_err(|_| KvError::Lock)?
                     .get(&log)
                     .ok_or(KvError::File)?
                     .read()
@@ -343,7 +354,6 @@ impl KvStore {
 
     fn start_compact(&self) -> Result<()> {
         loop {
-            println!("A new compact loop");
             let uncompact = {
                 let Ok(uncompact) = self.uncompact.try_read().map_err(|_| KvError::Lock) else {
                     continue;
