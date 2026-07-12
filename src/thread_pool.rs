@@ -53,14 +53,16 @@ impl ThreadPool for SharedQueueThreadPool {
             let shutdown = Arc::clone(&shutdown);
             thread_pool.work.push(thread::spawn(move || {
                 while !*shutdown.lock().unwrap() {
-                    let Ok(_) = panic::catch_unwind(|| match receiver.recv() {
+                    if panic::catch_unwind(|| match receiver.recv() {
                         Ok(ThreadPoolMessage::RunJob(thread)) => {
                             thread();
                         }
                         _ => {
                             *shutdown.lock().unwrap() = true;
                         }
-                    }) else {
+                    })
+                    .is_err()
+                    {
                         continue;
                     };
                 }

@@ -18,6 +18,8 @@ use std::collections::HashMap;
 use std::fs::{self, DirBuilder, File, OpenOptions};
 use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::PathBuf;
+use std::sync::atomic::AtomicU64;
+use std::sync::atomic::Ordering::{Relaxed, SeqCst};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
@@ -30,6 +32,7 @@ const LOG_FILE_EXT: &str = "log";
 const LOG_FILE_SIZE: u64 = 1024 * 1024;
 /// Threshold for triggering compaction
 const LOG_UNCOMPACT: u64 = 1000;
+const CMD_EXE_RATIO: u64 = 1;
 
 type MultiSafeHashMap = Arc<RwLock<HashMap<u64, Arc<RwLock<BufReader<File>>>>>>;
 
@@ -39,7 +42,7 @@ pub struct KvStore {
     writer: Arc<RwLock<BufWriter<File>>>,
     reader: MultiSafeHashMap,
     map: Arc<RwLock<HashMap<String, KvPointer>>>,
-    uncompact: Arc<RwLock<u64>>,
+    uncompact: Arc<AtomicU64>,
     maintain: Arc<Mutex<Option<JoinHandle<()>>>>,
     // flag: bool,
 }
@@ -86,6 +89,9 @@ impl KvsEngine for KvStore {
     /// If the key already exists, the value will be updated.
     /// Triggers compaction when the uncompact count exceeds the threshold.
     fn set(&self, key: String, value: String) -> Result<()> {
+        if self.uncompact.load(Relaxed) >= LOG_UNCOMPACT {
+            thread::sleep(Duration::from_millis(CMD_EXE_RATIO));
+        }
         let kv_log = KvLog::build_from(KvCommand::Set, key.clone(), Some(value));
         let pointer = self.write_log(&kv_log)?;
         self.add_index(key, pointer)?;
@@ -129,6 +135,9 @@ impl KvsEngine for KvStore {
         };
 
         if execute {
+            if self.uncompact.load(Relaxed) >= LOG_UNCOMPACT {
+                thread::sleep(Duration::from_millis(CMD_EXE_RATIO));
+            }
             let kv_log = KvLog::build_from(KvCommand::Rm, key.clone(), None);
             self.write_log(&kv_log)?;
             self.delete_index(key)?;
@@ -145,9 +154,7 @@ impl KvsEngine for KvStore {
 impl Drop for KvStore {
     fn drop(&mut self) {
         if Arc::strong_count(&self.maintain) == 1 {
-            if let Ok(mut uncompact) = self.uncompact.write() {
-                *uncompact = u64::MAX;
-            }
+            self.uncompact.store(u64::MAX, SeqCst);
             if let Ok(mut thread) = self.maintain.lock()
                 && let Some(handle) = thread.take()
             {
@@ -177,7 +184,7 @@ impl KvStore {
             map: Arc::new(RwLock::new(HashMap::new())),
             path: Arc::new(RwLock::new(path.clone())),
             active: Arc::new(RwLock::new(KvPointer::new())),
-            uncompact: Arc::new(RwLock::new(0)),
+            uncompact: Arc::new(AtomicU64::new(0)),
             maintain: Arc::new(Mutex::new(None)),
             // flag: false,
         };
@@ -255,7 +262,8 @@ impl KvStore {
             .map_err(|_| KvError::Lock)?
             .insert(key, pointer)
         else {
-            *self.uncompact.write().map_err(|_| KvError::Lock)? += 1;
+            self.uncompact
+                .store(self.uncompact.load(Relaxed) + 1, Relaxed);
             return Ok(());
         };
         Ok(())
@@ -263,8 +271,8 @@ impl KvStore {
 
     fn delete_index(&self, key: String) -> Result<()> {
         let mut map = self.map.write().map_err(|_| KvError::Lock)?;
-        let mut uncompact = self.uncompact.write().map_err(|_| KvError::Lock)?;
-        *uncompact += 1;
+        self.uncompact
+            .store(self.uncompact.load(Relaxed) + 1, Relaxed);
         if map.remove(&key).is_some() {
             Ok(())
         } else {
@@ -315,7 +323,6 @@ impl KvStore {
             let mut active = self.active.write().map_err(|_| KvError::Lock)?;
             let mut map = self.map.write().map_err(|_| KvError::Lock)?;
             let mut reader = self.reader.write().map_err(|_| KvError::Lock)?;
-            let mut uncompact = self.uncompact.write().map_err(|_| KvError::Lock)?;
             reader.insert(
                 log,
                 Arc::new(RwLock::new(BufReader::new(File::open(file)?))),
@@ -338,12 +345,14 @@ impl KvStore {
                 let pointer = KvPointer { log, pos, sz };
                 if let KvCommand::Set = e.command {
                     if map.contains_key(&e.key) {
-                        *uncompact += 1;
+                        self.uncompact
+                            .store(self.uncompact.load(Relaxed) + 1, Relaxed);
                     }
                     map.insert(e.key, pointer.clone());
                 } else {
                     map.remove(&e.key);
-                    *uncompact += 1;
+                    self.uncompact
+                        .store(self.uncompact.load(Relaxed) + 1, Relaxed);
                 }
                 *active = pointer;
                 pos += sz;
@@ -354,12 +363,7 @@ impl KvStore {
 
     fn start_compact(&self) -> Result<()> {
         loop {
-            let uncompact = {
-                let Ok(uncompact) = self.uncompact.try_read().map_err(|_| KvError::Lock) else {
-                    continue;
-                };
-                *uncompact
-            };
+            let uncompact = self.uncompact.load(Relaxed);
             if uncompact == u64::MAX {
                 break;
             } else if uncompact >= LOG_UNCOMPACT {
@@ -404,7 +408,7 @@ impl KvStore {
                         fs::remove_file(file)?;
                     }
                 }
-                *self.uncompact.write().map_err(|_| KvError::Lock)? = 0;
+                self.uncompact.store(0, SeqCst);
             }
 
             thread::sleep(Duration::from_secs(1));
