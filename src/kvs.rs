@@ -211,7 +211,6 @@ impl KvStore {
         let stream = self.stream_serialize(log)?;
         let sz = stream.len() as u64 + 1;
         let mut shared = self.shared.lock().map_err(|_| KvError::Lock)?;
-        let mut map = self.map.write().map_err(|_| KvError::Lock)?;
 
         if shared.active.pos + shared.active.sz + sz > LOG_FILE_SIZE {
             shared.active.log += 1;
@@ -233,9 +232,12 @@ impl KvStore {
         shared.writer.write_all(b"\n")?;
         shared.writer.flush()?;
         shared.active = shared.active.build_from(sz);
+        let active = shared.active.clone();
+        drop(shared);
 
+        let mut map = self.map.write().map_err(|_| KvError::Lock)?;
         if let KvCommand::Set = log.command {
-            if map.insert(log.key.clone(), shared.active.clone()).is_some() {
+            if map.insert(log.key.clone(), active).is_some() {
                 self.uncompact.fetch_add(1, Relaxed);
             };
         } else {
@@ -247,14 +249,21 @@ impl KvStore {
     }
 
     fn read_log(&self, key: &String) -> Result<KvLog> {
-        let map = self.map.read().map_err(|_| KvError::Lock)?;
-        let current_reader = self.reader.read().map_err(|_| KvError::Lock)?;
-        let p = map.get(key).ok_or(KvError::Log)?;
-        let reader = current_reader
+        let p = self
+            .map
+            .read()
+            .map_err(|_| KvError::Lock)?
+            .get(key)
+            .ok_or(KvError::Log)?
+            .clone();
+        let mut data = vec![0u8; p.sz as usize];
+        let reader = self
+            .reader
+            .read()
+            .map_err(|_| KvError::Lock)?
             .get(&p.log)
             .ok_or(KvError::File)?
             .try_clone()?;
-        let mut data = vec![0u8; p.sz as usize];
         reader.read_at(&mut data, p.pos)?;
         let log: KvLog = self.stream_deserialize(&data)?;
         Ok(log)
@@ -352,12 +361,18 @@ impl KvStore {
                             let stream = self.stream_serialize(&e)?;
                             let sz = stream.len() as u64 + 1;
 
-                            let mut shared = self.shared.lock().map_err(|_| KvError::Lock)?;
-                            let mut map = self.map.write().map_err(|_| KvError::Lock)?;
                             pointer = pointer.build_from(sz);
-                            let map_pointer = map.get(&e.key).cloned().unwrap_or(KvPointer::new());
 
-                            if pointer == map_pointer {
+                            let mut shared = self.shared.lock().map_err(|_| KvError::Lock)?;
+                            if pointer
+                                == self
+                                    .map
+                                    .read()
+                                    .map_err(|_| KvError::Lock)?
+                                    .get(&e.key)
+                                    .cloned()
+                                    .unwrap_or(KvPointer::new())
+                            {
                                 if shared.active.pos + shared.active.sz + sz > LOG_FILE_SIZE {
                                     shared.active.log += 1;
                                     shared.active.pos = 0;
@@ -379,10 +394,25 @@ impl KvStore {
                                 shared.writer.write_all(b"\n")?;
                                 shared.writer.flush()?;
                                 shared.active = shared.active.build_from(sz);
-                                map.insert(e.key, shared.active.clone());
+                                let active = shared.active.clone();
+                                drop(shared);
+
+                                self.map
+                                    .write()
+                                    .map_err(|_| KvError::Lock)?
+                                    .insert(e.key, active);
                             }
                         }
-                        fs::remove_file(file)?;
+                        self.reader
+                            .write()
+                            .map_err(|_| KvError::Lock)?
+                            .remove(&log)
+                            .ok_or(KvError::File)?;
+                        loop {
+                            if fs::remove_file(file).is_ok() {
+                                break;
+                            }
+                        }
                     }
                 }
                 self.uncompact.store(0, SeqCst);
