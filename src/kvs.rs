@@ -33,7 +33,8 @@ const LOG_FILE_EXT: &str = "log";
 const LOG_FILE_SIZE: u64 = 1024 * 1024;
 /// Threshold for triggering compaction
 const LOG_UNCOMPACT: u64 = 1000;
-const CMD_EXE_RATIO: u64 = 1;
+const CMD_EXE_RATIO: u64 = 10;
+const LOG_UNCOMPACT_SLEEP: u64 = LOG_UNCOMPACT * 10;
 
 pub struct KvStore {
     path: Arc<RwLock<PathBuf>>,
@@ -91,8 +92,10 @@ impl KvsEngine for KvStore {
     /// If the key already exists, the value will be updated.
     /// Triggers compaction when the uncompact count exceeds the threshold.
     fn set(&self, key: String, value: String) -> Result<()> {
-        if self.uncompact.load(Relaxed) >= LOG_UNCOMPACT {
-            thread::sleep(Duration::from_millis(CMD_EXE_RATIO));
+        if self.uncompact.load(Relaxed) > LOG_UNCOMPACT_SLEEP {
+            thread::sleep(Duration::from_nanos(CMD_EXE_RATIO));
+        } else if self.uncompact.load(Relaxed) > LOG_UNCOMPACT {
+            thread::yield_now();
         }
         let kv_log = KvLog::build_from(KvCommand::Set, key.clone(), Some(value));
         self.write_log(&kv_log)?;
@@ -135,8 +138,10 @@ impl KvsEngine for KvStore {
         };
 
         if execute {
-            if self.uncompact.load(Relaxed) >= LOG_UNCOMPACT {
-                thread::sleep(Duration::from_millis(CMD_EXE_RATIO));
+            if self.uncompact.load(Relaxed) > LOG_UNCOMPACT_SLEEP {
+                thread::sleep(Duration::from_nanos(CMD_EXE_RATIO));
+            } else if self.uncompact.load(Relaxed) > LOG_UNCOMPACT {
+                thread::yield_now();
             }
             let kv_log = KvLog::build_from(KvCommand::Rm, key.clone(), None);
             self.write_log(&kv_log)?;
@@ -336,6 +341,7 @@ impl KvStore {
 
     fn start_compact(&self) -> Result<()> {
         loop {
+            let mut compact = 0u64;
             let uncompact = self.uncompact.load(Relaxed);
             if uncompact == u64::MAX {
                 break;
@@ -343,7 +349,7 @@ impl KvStore {
                 let compact_bound = {
                     let Ok(compact_bound_lock) = self.shared.try_lock().map_err(|_| KvError::Lock)
                     else {
-                        thread::sleep(Duration::from_secs(CMD_EXE_RATIO));
+                        thread::yield_now();
                         continue;
                     };
                     compact_bound_lock.active.log
@@ -402,6 +408,7 @@ impl KvStore {
                                     .map_err(|_| KvError::Lock)?
                                     .insert(e.key, active);
                             }
+                            compact += 1;
                         }
                         self.reader
                             .write()
@@ -415,9 +422,9 @@ impl KvStore {
                         }
                     }
                 }
-                self.uncompact.store(0, SeqCst);
+                self.uncompact.fetch_sub(compact, SeqCst);
             }
-            thread::sleep(Duration::from_secs(CMD_EXE_RATIO));
+            thread::sleep(Duration::from_nanos(CMD_EXE_RATIO * 1000));
         }
 
         Ok(())
