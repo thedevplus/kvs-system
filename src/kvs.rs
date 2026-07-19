@@ -16,7 +16,7 @@ use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::fs::{self, DirBuilder, File, OpenOptions};
-use std::io::{BufReader, BufWriter, Write};
+use std::io::{BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::os::unix::fs::FileExt;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicU64;
@@ -33,8 +33,8 @@ const LOG_FILE_EXT: &str = "log";
 const LOG_FILE_SIZE: u64 = 1024 * 1024;
 /// Threshold for triggering compaction
 const LOG_UNCOMPACT: u64 = 1000;
-const CMD_EXE_RATIO: u64 = 10;
-const LOG_UNCOMPACT_SLEEP: u64 = LOG_UNCOMPACT * 10;
+const CMD_EXE_RATIO: u64 = 1;
+const LOG_UNCOMPACT_SLEEP: u64 = LOG_UNCOMPACT * 500;
 
 pub struct KvStore {
     path: Arc<RwLock<PathBuf>>,
@@ -182,7 +182,7 @@ impl KvStore {
                 OpenOptions::new()
                     .create(true)
                     .append(true)
-                    .open(number_convert_to_log_path(&path, 0))?,
+                    .open(number_convert_to_log_path(&path, 0, LOG_FILE_EXT))?,
             ),
         };
 
@@ -201,6 +201,7 @@ impl KvStore {
             number_convert_to_log_path(
                 &path,
                 kvs.shared.lock().map_err(|_| KvError::Lock)?.active.log,
+                LOG_FILE_EXT,
             ),
         )?);
         kvs.shared.lock().map_err(|_| KvError::Lock)?.writer = log_path;
@@ -214,7 +215,7 @@ impl KvStore {
 
     fn write_log(&self, log: &KvLog) -> Result<()> {
         let stream = self.stream_serialize(log)?;
-        let sz = stream.len() as u64 + 1;
+        let sz = stream.len() as u64 + 9;
         let mut shared = self.shared.lock().map_err(|_| KvError::Lock)?;
 
         if shared.active.pos + shared.active.sz + sz > LOG_FILE_SIZE {
@@ -224,6 +225,7 @@ impl KvStore {
             let file = number_convert_to_log_path(
                 self.path.read().map_err(|_| KvError::Lock)?.as_path(),
                 shared.active.log,
+                LOG_FILE_EXT,
             );
             shared.writer =
                 BufWriter::new(OpenOptions::new().create(true).append(true).open(&file)?);
@@ -233,6 +235,7 @@ impl KvStore {
                 .insert(shared.active.log, File::open(file)?);
         }
 
+        shared.writer.write_all(sz.to_le_bytes().as_slice())?;
         shared.writer.write_all(&stream)?;
         shared.writer.write_all(b"\n")?;
         shared.writer.flush()?;
@@ -270,7 +273,8 @@ impl KvStore {
             .ok_or(KvError::File)?
             .try_clone()?;
         reader.read_at(&mut data, p.pos)?;
-        let log: KvLog = self.stream_deserialize(&data)?;
+        let log = self.stream_deserialize(&data)?;
+
         Ok(log)
     }
 
@@ -282,7 +286,7 @@ impl KvStore {
         Ok(serde_json::from_slice(data)?)
     }
 
-    fn read_directory_and_sort(&self) -> Result<Vec<(u64, PathBuf)>> {
+    fn read_directory_and_sort(&self, reverse: bool) -> Result<Vec<(u64, PathBuf)>> {
         let mut dir_files = Vec::new();
         for entry in fs::read_dir(self.path.read().map_err(|_| KvError::Lock)?.as_path())?.flatten()
         {
@@ -300,52 +304,64 @@ impl KvStore {
                 continue;
             }
         }
-        dir_files.sort();
+        if reverse {
+            dir_files.sort_by(|a, b| b.cmp(a));
+        } else {
+            dir_files.sort();
+        }
         Ok(dir_files)
     }
 
     fn start_build_map_and_reader(&self) -> Result<()> {
-        for e in self.read_directory_and_sort()?.iter() {
+        let mut shared = self.shared.lock().map_err(|_| KvError::Lock)?;
+        let mut map = self.map.write().map_err(|_| KvError::Lock)?;
+        let mut reader = self.reader.write().map_err(|_| KvError::Lock)?;
+        for e in self.read_directory_and_sort(false)? {
             let log = e.0;
-            let mut pointer = KvPointer { log, pos: 0, sz: 0 };
             let file = &e.1;
-            let mut shared = self.shared.lock().map_err(|_| KvError::Lock)?;
-            let mut map = self.map.write().map_err(|_| KvError::Lock)?;
-            let mut reader = self.reader.write().map_err(|_| KvError::Lock)?;
             reader.insert(log, File::open(file)?);
-            drop(reader);
-            serde_json::Deserializer::from_reader(
-                self.reader
-                    .read()
-                    .map_err(|_| KvError::Lock)?
-                    .get(&log)
-                    .ok_or(KvError::File)?,
-            )
-            .into_iter::<KvLog>()
-            .flatten()
-            .for_each(|e| {
-                pointer = pointer.build_from(get_size(&e));
-                if let KvCommand::Set = e.command {
-                    if map.insert(e.key, pointer.clone()).is_some() {
+
+            let mut reader = BufReader::new(OpenOptions::new().read(true).open(file)?);
+            let mut pointer = KvPointer { log, pos: 0, sz: 0 };
+            let mut read_sz = [0u8; 8];
+            let mut sz;
+            let mut read_log = Vec::with_capacity(1024 * 1024);
+
+            loop {
+                reader.seek(SeekFrom::Current(0))?;
+                if reader.read_exact(&mut read_sz).is_err() {
+                    break;
+                }
+                sz = u64::from_le_bytes(read_sz);
+                read_log.resize(sz as usize - 8, 0);
+                if reader.read_exact(&mut read_log).is_err() {
+                    break;
+                }
+                let kv_log = self.stream_deserialize::<KvLog>(&read_log)?;
+                pointer = pointer.build_from(sz);
+                if let KvCommand::Set = kv_log.command {
+                    if map.insert(kv_log.key, pointer.clone()).is_some() {
                         self.uncompact.fetch_add(1, Relaxed);
                     }
                 } else {
-                    map.remove(&e.key);
+                    map.remove(&kv_log.key);
                     self.uncompact.fetch_add(1, Relaxed);
                 }
-                shared.active = pointer.clone();
-            });
+            }
+
+            shared.active = pointer.clone();
+            println!("{map:?}");
         }
         Ok(())
     }
 
     fn start_compact(&self) -> Result<()> {
         loop {
-            let mut compact = 0u64;
             let uncompact = self.uncompact.load(Relaxed);
             if uncompact == u64::MAX {
                 break;
             } else if uncompact >= LOG_UNCOMPACT {
+                let mut compact = 0u64;
                 let compact_bound = {
                     let Ok(compact_bound_lock) = self.shared.try_lock().map_err(|_| KvError::Lock)
                     else {
@@ -354,73 +370,72 @@ impl KvStore {
                     };
                     compact_bound_lock.active.log
                 };
-                for e in self.read_directory_and_sort()?.iter() {
+                for e in self.read_directory_and_sort(true)?[1..].into_iter() {
                     let log = e.0;
-                    if log < compact_bound {
-                        let mut pointer = KvPointer { log, pos: 0, sz: 0 };
-                        let file = &e.1;
-                        let reader = BufReader::new(File::open(file)?);
-                        let stream_iter = serde_json::Deserializer::from_reader(reader)
-                            .into_iter::<KvLog>()
-                            .flatten();
-                        for e in stream_iter {
-                            let stream = self.stream_serialize(&e)?;
-                            let sz = stream.len() as u64 + 1;
+                    let mut pointer = KvPointer { log, pos: 0, sz: 0 };
+                    let file = &e.1;
+                    let reader = BufReader::new(File::open(file)?);
+                    let stream_iter = serde_json::Deserializer::from_reader(reader)
+                        .into_iter::<KvLog>()
+                        .flatten();
+                    for e in stream_iter {
+                        let stream = self.stream_serialize(&e)?;
+                        let sz = stream.len() as u64 + 1;
 
-                            pointer = pointer.build_from(sz);
+                        pointer = pointer.build_from(sz);
 
-                            let mut shared = self.shared.lock().map_err(|_| KvError::Lock)?;
-                            if pointer
-                                == self
-                                    .map
-                                    .read()
-                                    .map_err(|_| KvError::Lock)?
-                                    .get(&e.key)
-                                    .cloned()
-                                    .unwrap_or(KvPointer::new())
-                            {
-                                if shared.active.pos + shared.active.sz + sz > LOG_FILE_SIZE {
-                                    shared.active.log += 1;
-                                    shared.active.pos = 0;
-                                    shared.active.sz = 0;
-                                    let file = number_convert_to_log_path(
-                                        self.path.read().map_err(|_| KvError::Lock)?.as_path(),
-                                        shared.active.log,
-                                    );
-                                    shared.writer = BufWriter::new(
-                                        OpenOptions::new().create(true).append(true).open(&file)?,
-                                    );
-                                    self.reader
-                                        .write()
-                                        .map_err(|_| KvError::Lock)?
-                                        .insert(shared.active.log, File::open(file)?);
-                                }
-
-                                shared.writer.write_all(&stream)?;
-                                shared.writer.write_all(b"\n")?;
-                                shared.writer.flush()?;
-                                shared.active = shared.active.build_from(sz);
-                                let active = shared.active.clone();
-                                drop(shared);
-
-                                self.map
+                        let mut shared = self.shared.lock().map_err(|_| KvError::Lock)?;
+                        if pointer
+                            == self
+                                .map
+                                .read()
+                                .map_err(|_| KvError::Lock)?
+                                .get(&e.key)
+                                .cloned()
+                                .unwrap_or(KvPointer::new())
+                        {
+                            if shared.active.pos + shared.active.sz + sz > LOG_FILE_SIZE {
+                                shared.active.log += 1;
+                                shared.active.pos = 0;
+                                shared.active.sz = 0;
+                                let file = number_convert_to_log_path(
+                                    self.path.read().map_err(|_| KvError::Lock)?.as_path(),
+                                    shared.active.log,
+                                    LOG_FILE_EXT,
+                                );
+                                shared.writer = BufWriter::new(
+                                    OpenOptions::new().create(true).append(true).open(&file)?,
+                                );
+                                self.reader
                                     .write()
                                     .map_err(|_| KvError::Lock)?
-                                    .insert(e.key, active);
+                                    .insert(shared.active.log, File::open(file)?);
                             }
+
+                            shared.writer.write_all(&stream)?;
+                            shared.writer.write_all(b"\n")?;
+                            shared.writer.flush()?;
+                            shared.active = shared.active.build_from(sz);
+                            let active = shared.active.clone();
+                            drop(shared);
+
+                            self.map
+                                .write()
+                                .map_err(|_| KvError::Lock)?
+                                .insert(e.key, active);
+
                             compact += 1;
                         }
-                        self.reader
-                            .write()
-                            .map_err(|_| KvError::Lock)?
-                            .remove(&log)
-                            .ok_or(KvError::File)?;
-                        loop {
-                            if fs::remove_file(file).is_ok() {
-                                break;
-                            }
-                        }
                     }
+                    while self
+                        .reader
+                        .try_write()
+                        .map_err(|_| KvError::Lock)?
+                        .remove(&log)
+                        .ok_or(KvError::File)
+                        .is_err()
+                    {}
+                    fs::remove_file(file)?;
                 }
                 self.uncompact.fetch_sub(compact, SeqCst);
             }
@@ -468,10 +483,10 @@ impl KvLog {
     }
 }
 
-fn number_convert_to_log_path(path: impl Into<PathBuf>, log: u64) -> PathBuf {
+fn number_convert_to_log_path(path: impl Into<PathBuf>, log: u64, ext: &str) -> PathBuf {
     let mut path = path.into();
     path.push(log.to_string());
-    path.set_extension(LOG_FILE_EXT);
+    path.set_extension(ext);
     path
 }
 
@@ -485,7 +500,7 @@ fn get_size(log: &KvLog) -> u64 {
 fn directory_initial(dir: &PathBuf) -> Result<()> {
     if !dir.is_dir() {
         DirBuilder::new().create(dir)?;
-        File::create(number_convert_to_log_path(dir, 0))?;
+        File::create(number_convert_to_log_path(dir, 0, LOG_FILE_EXT))?;
     }
     Ok(())
 }
