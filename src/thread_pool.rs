@@ -31,7 +31,7 @@ impl ThreadPool for NaiveThreadPool {
 }
 
 pub struct SharedQueueThreadPool {
-    send: Sender<ThreadPoolMessage>,
+    send: Option<Sender<ThreadPoolMessage>>,
     work: Vec<JoinHandle<()>>,
 }
 
@@ -44,7 +44,7 @@ impl ThreadPool for SharedQueueThreadPool {
     fn new(threads: u32) -> Result<impl ThreadPool> {
         let (sender, receiver) = crossbeam_channel::bounded(threads as usize);
         let mut thread_pool = Self {
-            send: sender,
+            send: Some(sender),
             work: Vec::new(),
         };
         let shutdown = Arc::new(Mutex::new(false));
@@ -76,12 +76,11 @@ impl ThreadPool for SharedQueueThreadPool {
     where
         F: FnOnce() + Send + 'static,
     {
-        if self
-            .send
-            .send(ThreadPoolMessage::RunJob(Box::new(job)))
-            .is_ok()
+        if let Some(sender) = &self.send
+            && sender
+                .send(ThreadPoolMessage::RunJob(Box::new(job)))
+                .is_err()
         {
-        } else {
             eprintln!("Threads try to shutdown and process is aborted");
         };
     }
@@ -89,7 +88,9 @@ impl ThreadPool for SharedQueueThreadPool {
     fn shutdown(&self) {
         let mut busy = false;
         for _ in 0..self.work.len() {
-            while self.send.try_send(ThreadPoolMessage::Shutdown).is_err() {
+            while let Some(sender) = &self.send
+                && sender.try_send(ThreadPoolMessage::Shutdown).is_err()
+            {
                 busy = true;
             }
             if busy {
@@ -101,8 +102,10 @@ impl ThreadPool for SharedQueueThreadPool {
 
 impl Drop for SharedQueueThreadPool {
     fn drop(&mut self) {
-        let (sender, _) = crossbeam_channel::unbounded();
-        self.send = sender;
+        let sender = self.send.take();
+        if let Some(sender) = sender {
+            drop(sender);
+        };
         while let Some(handle) = self.work.pop() {
             let _ = handle.join();
         }
