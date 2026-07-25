@@ -176,8 +176,6 @@ impl KvStore {
         let path = path.into();
         directory_initial(&path)?;
 
-        let mut init = path.clone();
-        init.push("init.log");
         let shared = SharedKvStore {
             active: KvPointer::new(),
             writer: BufWriter::new(
@@ -207,7 +205,6 @@ impl KvStore {
             ),
         )?);
         kvs.shared.lock().map_err(|_| KvError::Lock)?.writer = log_path;
-        if fs::remove_file(init).is_err() {};
         let compact_kvs = kvs.clone();
         kvs.maintain = Arc::new(Mutex::new(Some(thread::spawn(move || {
             if compact_kvs.start_compact().is_ok() {}
