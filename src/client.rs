@@ -30,7 +30,9 @@ where
         address: SocketAddr,
     ) -> Result<()> {
         self.thread.spawn(move || {
-            let _ = deal(command, key, value, address);
+            if deal(command, key, value, address).is_err() {
+                process::exit(1);
+            }
         });
 
         Ok(())

@@ -2,6 +2,7 @@ use crate::protocol::{self, KvStream, StreamCommand};
 use crate::{KvError, KvsEngine, Result, thread_pool::ThreadPool};
 use std::io::{BufRead, BufReader, Write};
 use std::net::{TcpListener, TcpStream};
+use std::process;
 
 pub struct KvsServer<S, T>
 where
@@ -28,9 +29,12 @@ where
 
             let kvs = self.store.clone();
             self.spawn(move || {
-                let _ = deal(kvs, stream, tcp_stream);
+                if deal(kvs, stream, tcp_stream).is_err() {
+                    process::exit(1);
+                }
             });
         }
+
         Ok(())
     }
 
