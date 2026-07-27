@@ -532,7 +532,7 @@ fn number_convert_to_log_path(path: impl Into<PathBuf>, log: u64, ext: &str) -> 
 fn directory_initial(dir: &PathBuf) -> Result<()> {
     if !dir.is_dir() {
         DirBuilder::new().create(dir)?;
-        File::create(number_convert_to_log_path(dir, 0, LOG_FILE_EXT))?;
+        // File::create(number_convert_to_log_path(dir, 0, LOG_FILE_EXT))?;
     }
     Ok(())
 }
