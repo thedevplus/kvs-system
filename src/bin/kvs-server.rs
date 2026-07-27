@@ -11,12 +11,10 @@
 
 use clap::{Parser, ValueEnum};
 use kvs::error::KvError;
-use kvs::protocol::{KvStream, StreamCommand};
 use kvs::thread_pool::{SharedQueueThreadPool, ThreadPool};
-use kvs::{Engine, KvStore, Result, SledKvsEngine, protocol};
-use log::{LevelFilter, debug, info};
-use std::io::{BufRead, BufReader, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
+use kvs::{KvStore, KvsServer, Result, SledKvsEngine};
+use log::{LevelFilter, debug};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::path::PathBuf;
 use std::{fs, process};
 
@@ -44,6 +42,26 @@ enum EngineType {
     Sled,
 }
 
+enum DefineKvsServer<T>
+where
+    T: ThreadPool,
+{
+    Kvs(KvsServer<KvStore, T>),
+    Sled(KvsServer<SledKvsEngine, T>),
+}
+
+impl<T> DefineKvsServer<T>
+where
+    T: ThreadPool,
+{
+    fn work(&self, listener: TcpListener) -> Result<()> {
+        match self {
+            DefineKvsServer::Kvs(kvs) => kvs.work(listener),
+            DefineKvsServer::Sled(sled) => sled.work(listener),
+        }
+    }
+}
+
 /// Entry point for the key-value store server.
 ///
 /// This function:
@@ -59,8 +77,6 @@ fn main() -> Result<()> {
         .verbosity(LevelFilter::Debug)
         .init()?;
     let args = Args::parse();
-
-    let listener = TcpListener::bind(args.addr)?;
 
     // Prepare database directory path
     let mut path = PathBuf::from("./");
@@ -84,17 +100,6 @@ fn main() -> Result<()> {
         }
     }
 
-    // Initialize the appropriate storage engine
-    let kvs = match args.engine {
-        Some(EngineType::Kvs) | None if !engine_exist.0 => Engine::Kvs(KvStore::open(&path)?),
-        Some(EngineType::Sled) | None if !engine_exist.1 => {
-            Engine::Sled(SledKvsEngine::open(&path)?)
-        }
-        _ => {
-            process::exit(1);
-        }
-    };
-
     let cpu_num = num_cpus::get();
     if cpu_num < 2 {
         eprintln!("Your hardware currently is not available for running server process.");
@@ -102,105 +107,29 @@ fn main() -> Result<()> {
     }
     let workers = SharedQueueThreadPool::new(cpu_num as u32)?;
 
+    // Initialize the appropriate storage engine
+    let kvs = match args.engine {
+        Some(EngineType::Kvs) | None if !engine_exist.0 => {
+            DefineKvsServer::Kvs(KvsServer::new(KvStore::open(path)?, workers)?)
+        }
+        Some(EngineType::Sled) | None if !engine_exist.1 => {
+            DefineKvsServer::Sled(KvsServer::new(SledKvsEngine::open(path)?, workers)?)
+        }
+        _ => process::exit(1),
+    };
+
     debug!(
         "program: kvs-server, version: {}, address: {}, engine: {}, threads: {}",
         env!("CARGO_PKG_VERSION"),
         args.addr,
         match kvs {
-            Engine::Kvs(_) => "kvs",
-            Engine::Sled(_) => "sled",
+            DefineKvsServer::Kvs(_) => "kvs",
+            DefineKvsServer::Sled(_) => "sled",
         },
         cpu_num
     );
-    let mut count = 0usize;
 
     // Main server loop: accept and handle TCP connections
-    while let Some(Ok(tcp_stream)) = listener.incoming().next() {
-        info!("TCP connected: ok.");
-        // server_worker(&kvs, &tcp_stream)?;
-        if count < 8 {
-            let kvs = kvs.clone();
-            let tcp_stream = tcp_stream.try_clone()?;
-            workers.spawn(move || {
-                let _ = server_worker(&kvs, &tcp_stream);
-            });
-            count += 1;
-        } else {
-            break;
-        }
-    }
-
-    Ok(())
-}
-
-fn server_worker(kvs: &Engine, tcp_stream: &TcpStream) -> Result<()> {
-    let stream = BufReader::new(tcp_stream);
-    let mut iter = stream.lines();
-    let mut tcp_stream = tcp_stream.try_clone()?;
-
-    // Process each command from the client
-    while let Some(Ok(stream)) = iter.next() {
-        let v = stream.as_bytes().to_owned();
-        if let Ok(kv_stream) = protocol::parse_protocol_stream(&v) {
-            // Handle command and prepare response
-            let stream =
-                match kv_stream.command {
-                    // Set command: store key-value pair
-                    StreamCommand::St
-                        if kvs
-                            .set(
-                                kv_stream.key.clone(),
-                                kv_stream.value.ok_or(KvError::Network)?,
-                            )
-                            .is_ok() =>
-                    {
-                        protocol::create_protocol_stream(&KvStream::build_from(
-                            StreamCommand::Rm,
-                            "".to_string(),
-                            None,
-                        ))?
-                    }
-                    // Get command: retrieve value by key
-                    StreamCommand::Gt => match kvs.get(kv_stream.key) {
-                        Ok(Some(value)) => protocol::create_protocol_stream(
-                            &KvStream::build_from(StreamCommand::Gt, value, None),
-                        )?,
-                        Ok(None) => protocol::create_protocol_stream(&KvStream::build_from(
-                            StreamCommand::Gn,
-                            "Key not found".to_string(),
-                            None,
-                        ))?,
-                        _ => {
-                            tcp_stream.write_all(b"\n")?;
-                            continue;
-                        }
-                    },
-                    // Remove command: delete key-value pair
-                    StreamCommand::Rm => {
-                        if kvs.remove(kv_stream.key).is_ok() {
-                            protocol::create_protocol_stream(&KvStream::build_from(
-                                StreamCommand::Rm,
-                                "".to_string(),
-                                None,
-                            ))?
-                        } else {
-                            protocol::create_protocol_stream(&KvStream::build_from(
-                                StreamCommand::Re,
-                                "Key not found".to_string(),
-                                None,
-                            ))?
-                        }
-                    }
-                    _ => {
-                        tcp_stream.write_all(b"\n")?;
-                        continue;
-                    }
-                };
-            // Send response back to client
-            tcp_stream.write_all(&stream)?;
-            tcp_stream.write_all(b"\n")?;
-            // info!("Respone: ok.");
-        }
-    }
-    Ok(())
+    let listener = TcpListener::bind(args.addr)?;
+    kvs.work(listener)
 }

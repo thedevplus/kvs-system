@@ -21,7 +21,7 @@ where
         Ok(KvsServer { store, thread })
     }
 
-    pub fn worker(&self, listener: TcpListener) -> Result<()> {
+    pub fn work(&self, listener: TcpListener) -> Result<()> {
         while let Some(Ok(tcpstream)) = listener.incoming().next() {
             let tcp_stream = tcpstream.try_clone()?;
             let stream = BufReader::new(tcpstream);

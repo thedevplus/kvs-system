@@ -9,13 +9,11 @@
 //! - `rm <key>`: Remove a key-value pair
 
 use clap::Parser;
-use kvs::Result;
 use kvs::kvs::KvCommand;
-use kvs::protocol::{self, KvStream, StreamCommand};
-use log::{LevelFilter, info};
-use std::io::{BufRead, BufReader, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpStream};
-use std::process;
+use kvs::thread_pool::SharedQueueThreadPool;
+use kvs::{KvsClient, Result, ThreadPool};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+//use log::{LevelFilter, info};
 
 /// Command-line arguments for the key-value store client.
 #[derive(Parser)]
@@ -40,54 +38,9 @@ struct Args {
 /// 3. Sends the command request
 /// 4. Receives and processes the response
 fn main() -> Result<()> {
-    stderrlog::new()
-        .module(module_path!())
-        .show_module_names(true)
-        .verbosity(LevelFilter::Info)
-        .init()?;
     let args = Args::parse();
 
-    // Connect to the server
-    let mut tcp_stream = TcpStream::connect(args.addr)?;
-    info!("Connect to {}: ok.", args.addr);
-
-    // Build the protocol stream based on the command
-    let stream = match args.command {
-        KvCommand::Set if let Some(value) = args.value => protocol::create_protocol_stream(
-            &KvStream::build_from(StreamCommand::St, args.key, Some(value)),
-        ),
-        KvCommand::Get if args.value.is_none() => protocol::create_protocol_stream(
-            &KvStream::build_from(StreamCommand::Gt, args.key, None),
-        ),
-        KvCommand::Rm if args.value.is_none() => protocol::create_protocol_stream(
-            &KvStream::build_from(StreamCommand::Rm, args.key, None),
-        ),
-        _ => process::exit(1),
-    }?;
-
-    // Send the request to the server
-    tcp_stream.write_all(&stream)?;
-    tcp_stream.write_all(b"\n")?;
-
-    // Read and process the server response
-    let stream = BufReader::new(&tcp_stream);
-    if let Some(Ok(kv_stream)) = stream.lines().next() {
-        let stream = protocol::parse_protocol_stream(kv_stream.as_bytes())?;
-        match stream.command {
-            // Set/Remove success: no output
-            StreamCommand::St | StreamCommand::Rm => (),
-            // Get success: print the value
-            StreamCommand::Gt => println!("{}", stream.key),
-            // Key not found: print the message
-            StreamCommand::Gn => println!("{}", stream.key),
-            // Remove error: print error and exit
-            StreamCommand::Re => {
-                eprintln!("{}", stream.key);
-                process::exit(1);
-            }
-            _ => process::exit(1),
-        }
-    }
-
-    Ok(())
+    let threads = SharedQueueThreadPool::new(1)?;
+    let client = KvsClient::new(threads)?;
+    client.run(args.command, args.key, args.value, args.addr)
 }
