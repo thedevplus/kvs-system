@@ -156,14 +156,13 @@ impl KvsEngine for KvStore {
 
 impl Drop for KvStore {
     fn drop(&mut self) {
-        if Arc::strong_count(&self.maintain) == 1 {
+        if Arc::strong_count(&self.maintain) == 1
+            && let Ok(mut thread) = self.maintain.lock()
+            && let Some(handle) = thread.take()
+        {
             self.uncompact.store(u64::MAX, SeqCst);
-            if let Ok(mut thread) = self.maintain.lock()
-                && let Some(handle) = thread.take()
-            {
-                handle.join().unwrap();
-            };
-        }
+            handle.join().unwrap();
+        };
     }
 }
 
@@ -249,8 +248,11 @@ impl KvStore {
                 self.uncompact.fetch_add(1, Relaxed);
             };
         } else {
-            map.remove(&log.key).ok_or(KvError::Log)?;
-            self.uncompact.fetch_add(1, Relaxed);
+            if map.remove(&log.key).is_some() {
+                self.uncompact.fetch_add(1, Relaxed);
+            } else {
+                return Err(KvError::Log);
+            }
         }
         // self.flag = true;
         Ok(())
@@ -375,6 +377,7 @@ impl KvStore {
                     )?);
                 let mut compact = 0u64;
                 let mut remove_file_success = 0u64;
+                let mut record_pointer: HashMap<String, KvPointer> = HashMap::new();
 
                 for e in &entry {
                     let log = e.0;
@@ -385,11 +388,9 @@ impl KvStore {
                     let mut read_sz = [0u8; 8];
                     let mut sz;
                     let mut read_log = Vec::with_capacity(1024 * 1024);
-                    let mut map = self.map.write().map_err(|_| KvError::Lock)?;
-                    let mut file_reader = self.reader.write().map_err(|_| KvError::Lock)?;
+                    // let mut map = self.map.read().map_err(|_| KvError::Lock)?;
 
                     loop {
-                        println!("Compact file loop");
                         if reader.read_exact(&mut read_sz).is_err() {
                             break;
                         }
@@ -401,7 +402,8 @@ impl KvStore {
                         let kv_log = self.stream_deserialize::<KvLog>(&read_log)?;
 
                         if let KvCommand::Set = kv_log.command {
-                            if let Some(map_store_log) = map.get(&kv_log.key)
+                            if let Some(map_store_log) =
+                                self.map.read().map_err(|_| KvError::Lock)?.get(&kv_log.key)
                                 && map_store_log.log == log
                             {
                                 if pointer.pos + pointer.sz + sz > LOG_FILE_SIZE {
@@ -419,14 +421,37 @@ impl KvStore {
                                         compact_file_index,
                                         "compact",
                                     );
-                                    if fs::remove_file(&log_file_before).is_ok() {
-                                        remove_file_success += 1;
-                                    };
                                     writer.flush()?;
-                                    fs::rename(&log_file_after, &log_file_before)?;
-                                    file_reader
-                                        .insert(compact_file_index, File::open(&log_file_before)?)
-                                        .ok_or(KvError::File)?;
+
+                                    {
+                                        // drop(map);
+                                        let mut map =
+                                            self.map.write().map_err(|_| KvError::Lock)?;
+                                        let mut file_reader =
+                                            self.reader.write().map_err(|_| KvError::Lock)?;
+
+                                        if fs::remove_file(&log_file_before).is_ok() {
+                                            remove_file_success += 1;
+                                        };
+                                        fs::rename(&log_file_after, &log_file_before)?;
+
+                                        record_pointer.into_iter().for_each(|(key, value)| {
+                                            if let Some(map_store_log) = map.get(&key)
+                                                && map_store_log.log == value.log
+                                            {
+                                                map.insert(key, value);
+                                            }
+                                        });
+                                        file_reader
+                                            .insert(
+                                                compact_file_index,
+                                                File::open(&log_file_before)?,
+                                            )
+                                            .ok_or(KvError::File)?;
+                                    }
+
+                                    record_pointer = HashMap::new();
+                                    // map = self.map.read().map_err(|_| KvError::Lock)?;
                                     compact_file_index += 1;
                                     writer = BufWriter::new(
                                         OpenOptions::new().create(true).append(true).open(
@@ -443,7 +468,9 @@ impl KvStore {
                                 writer.write_all(&read_log)?;
 
                                 pointer = pointer.build_from(sz);
-                                map.insert(kv_log.key, pointer.clone())
+
+                                record_pointer
+                                    .insert(kv_log.key, pointer.clone())
                                     .ok_or(KvError::Log)?;
                             } else {
                                 compact += 1;
@@ -455,16 +482,28 @@ impl KvStore {
                     number_convert_to_log_path(&path, compact_file_index, LOG_FILE_EXT);
                 let log_file_after =
                     number_convert_to_log_path(&path, compact_file_index, "compact");
-                if fs::remove_file(&log_file_before).is_ok() {
-                    remove_file_success += 1;
-                };
                 writer.flush()?;
-                fs::rename(&log_file_after, &log_file_before)?;
-                self.reader
-                    .write()
-                    .map_err(|_| KvError::Lock)?
-                    .insert(compact_file_index, File::open(&log_file_before)?)
-                    .ok_or(KvError::File)?;
+
+                {
+                    let mut map = self.map.write().map_err(|_| KvError::Lock)?;
+                    let mut file_reader = self.reader.write().map_err(|_| KvError::Lock)?;
+
+                    if fs::remove_file(&log_file_before).is_ok() {
+                        remove_file_success += 1;
+                    };
+                    fs::rename(&log_file_after, &log_file_before)?;
+
+                    record_pointer.into_iter().for_each(|(key, value)| {
+                        if let Some(map_store_log) = map.get(&key)
+                            && map_store_log.log == value.log
+                        {
+                            map.insert(key, value);
+                        }
+                    });
+                    file_reader
+                        .insert(compact_file_index, File::open(&log_file_before)?)
+                        .ok_or(KvError::File)?;
+                }
 
                 if entry.len() >= remove_file_success as usize {
                     entry[remove_file_success as usize..]
@@ -476,7 +515,14 @@ impl KvStore {
                         });
                 }
 
-                self.uncompact.fetch_sub(compact, SeqCst);
+                let uncompact = self.uncompact.load(SeqCst);
+                if uncompact == u64::MAX {
+                    break;
+                } else if compact > uncompact {
+                    self.uncompact.store(0, SeqCst);
+                } else {
+                    self.uncompact.fetch_sub(compact, SeqCst);
+                }
             }
             thread::sleep(Duration::from_secs(1));
         }
@@ -532,7 +578,6 @@ fn number_convert_to_log_path(path: impl Into<PathBuf>, log: u64, ext: &str) -> 
 fn directory_initial(dir: &PathBuf) -> Result<()> {
     if !dir.is_dir() {
         DirBuilder::new().create(dir)?;
-        // File::create(number_convert_to_log_path(dir, 0, LOG_FILE_EXT))?;
     }
     Ok(())
 }
