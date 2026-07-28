@@ -388,7 +388,6 @@ impl KvStore {
                     let mut read_sz = [0u8; 8];
                     let mut sz;
                     let mut read_log = Vec::with_capacity(1024 * 1024);
-                    // let mut map = self.map.read().map_err(|_| KvError::Lock)?;
 
                     loop {
                         if reader.read_exact(&mut read_sz).is_err() {
@@ -424,7 +423,6 @@ impl KvStore {
                                     writer.flush()?;
 
                                     {
-                                        // drop(map);
                                         let mut map =
                                             self.map.write().map_err(|_| KvError::Lock)?;
                                         let mut file_reader =
@@ -451,7 +449,6 @@ impl KvStore {
                                     }
 
                                     record_pointer = HashMap::new();
-                                    // map = self.map.read().map_err(|_| KvError::Lock)?;
                                     compact_file_index += 1;
                                     writer = BufWriter::new(
                                         OpenOptions::new().create(true).append(true).open(
@@ -505,13 +502,28 @@ impl KvStore {
                         .ok_or(KvError::File)?;
                 }
 
+                let mut delete_file_error_count = 0u64;
                 if entry.len() >= remove_file_success as usize {
                     entry[remove_file_success as usize..]
                         .iter()
                         .for_each(|(i, _)| {
-                            if fs::remove_file(number_convert_to_log_path(&path, *i, LOG_FILE_EXT))
+                            if delete_file_error_count < 3 {
+                                if fs::remove_file(number_convert_to_log_path(
+                                    &path,
+                                    *i,
+                                    LOG_FILE_EXT,
+                                ))
                                 .is_err()
-                            {}
+                                {
+                                    delete_file_error_count += 1;
+                                };
+
+                                if let Ok(mut reader) =
+                                    self.reader.write().map_err(|_| KvError::Lock)
+                                {
+                                    reader.remove(i);
+                                }
+                            }
                         });
                 }
 
