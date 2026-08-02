@@ -91,7 +91,7 @@ fn deal(command: KvCommand, key: String, value: Option<String>, address: SocketA
                 process::exit(1);
             }
             // Set/Remove success or wrong command: no output
-            StreamCommand::St | StreamCommand::Rm | _ => (),
+            _ => (),
         }
     }
 

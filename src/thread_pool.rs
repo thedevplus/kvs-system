@@ -94,7 +94,7 @@ impl ThreadPool for SharedQueueThreadPool {
     fn join(&mut self) -> Result<()> {
         let handle = self.work.take().ok_or(KvError::Thread)?;
         for e in handle {
-            if let Ok(_) = e.join() {}
+            if e.join().is_ok() {}
         }
 
         Ok(())
