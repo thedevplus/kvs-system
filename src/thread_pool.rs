@@ -1,9 +1,9 @@
 use crate::Result;
 use crate::error::KvError;
 use crossbeam_channel::{self, Sender};
-use std::panic;
 use std::sync::{Arc, Mutex};
 use std::thread::{self, JoinHandle};
+use std::{panic, process};
 
 pub trait ThreadPool {
     fn new(threads: u32) -> Result<impl ThreadPool>;
@@ -11,6 +11,10 @@ pub trait ThreadPool {
     fn spawn<F>(&self, job: F)
     where
         F: FnOnce() + Send + 'static;
+
+    fn join(&mut self) -> Result<()> {
+        Ok(())
+    }
 
     fn shutdown(&self) {}
 }
@@ -32,7 +36,7 @@ impl ThreadPool for NaiveThreadPool {
 
 pub struct SharedQueueThreadPool {
     send: Option<Sender<ThreadPoolMessage>>,
-    work: Vec<JoinHandle<()>>,
+    work: Option<Vec<JoinHandle<()>>>,
 }
 
 enum ThreadPoolMessage {
@@ -45,28 +49,30 @@ impl ThreadPool for SharedQueueThreadPool {
         let (sender, receiver) = crossbeam_channel::bounded(threads as usize);
         let mut thread_pool = Self {
             send: Some(sender),
-            work: Vec::new(),
+            work: Some(Vec::new()),
         };
         let shutdown = Arc::new(Mutex::new(false));
         (0..threads).for_each(|_| {
             let receiver = receiver.clone();
             let shutdown = Arc::clone(&shutdown);
-            thread_pool.work.push(thread::spawn(move || {
-                while !*shutdown.lock().unwrap() {
-                    if panic::catch_unwind(|| match receiver.recv() {
-                        Ok(ThreadPoolMessage::RunJob(thread)) => {
-                            thread();
-                        }
-                        _ => {
-                            *shutdown.lock().unwrap() = true;
-                        }
-                    })
-                    .is_err()
-                    {
-                        continue;
-                    };
-                }
-            }));
+            if let Some(work) = thread_pool.work.as_mut() {
+                work.push(thread::spawn(move || {
+                    while !*shutdown.lock().unwrap() {
+                        if panic::catch_unwind(|| match receiver.recv() {
+                            Ok(ThreadPoolMessage::RunJob(thread)) => {
+                                thread();
+                            }
+                            _ => {
+                                *shutdown.lock().unwrap() = true;
+                            }
+                        })
+                        .is_err()
+                        {
+                            continue;
+                        };
+                    }
+                }))
+            };
         });
 
         Ok(thread_pool)
@@ -85,9 +91,21 @@ impl ThreadPool for SharedQueueThreadPool {
         };
     }
 
+    fn join(&mut self) -> Result<()> {
+        let handle = self.work.take().ok_or(KvError::Thread)?;
+        for e in handle {
+            if let Ok(_) = e.join() {}
+        }
+
+        Ok(())
+    }
+
     fn shutdown(&self) {
         let mut busy = false;
-        for _ in 0..self.work.len() {
+        let Some(work) = self.work.as_ref() else {
+            process::exit(1)
+        };
+        for _ in 0..work.len() {
             while let Some(sender) = &self.send
                 && sender.try_send(ThreadPoolMessage::Shutdown).is_err()
             {
@@ -106,8 +124,10 @@ impl Drop for SharedQueueThreadPool {
         if let Some(sender) = sender {
             drop(sender);
         };
-        while let Some(handle) = self.work.pop() {
-            let _ = handle.join();
+        if let Some(handles) = self.work.as_mut() {
+            while let Some(handle) = handles.pop() {
+                let _ = handle.join();
+            }
         }
     }
 }

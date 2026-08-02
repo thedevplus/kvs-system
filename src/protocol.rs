@@ -12,6 +12,7 @@ pub enum StreamCommand {
     Ge,
     Gn,
     Re,
+    Sd,
 }
 
 #[derive(Clone, Debug)]
@@ -64,6 +65,8 @@ impl Serialize for KvStream {
                     stream += "ge";
                 } else if let StreamCommand::Gn = other {
                     stream += "gn";
+                } else if let StreamCommand::Sd = other {
+                    stream += "sd";
                 } else {
                     stream += "re";
                 }
@@ -92,7 +95,7 @@ impl<'de> Visitor<'de> for DeStream {
         let mut iter = v.split("\t\t");
         let mut kv_stream = KvStream::build_from(StreamCommand::Gt, String::from(""), None);
         if let Some(value) = iter.next()
-            && let cmd @ ("st" | "gt" | "rm" | "se" | "ge" | "gn" | "re") = &value[..2]
+            && let cmd @ ("st" | "gt" | "rm" | "se" | "ge" | "gn" | "re" | "sd") = &value[..2]
         {
             if cmd == "gt" {
                 kv_stream.command = StreamCommand::Gt;
@@ -106,6 +109,8 @@ impl<'de> Visitor<'de> for DeStream {
                 kv_stream.command = StreamCommand::Gn;
             } else if cmd == "re" {
                 kv_stream.command = StreamCommand::Re;
+            } else if cmd == "sd" {
+                kv_stream.command = StreamCommand::Sd;
             } else {
                 kv_stream.command = StreamCommand::St;
                 if let Some(value) = iter.next() {

@@ -21,4 +21,6 @@ pub enum KvError {
     Network,
     #[error("Failed to get lock")]
     Lock,
+    #[error("Thread error")]
+    Thread,
 }
