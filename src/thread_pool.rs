@@ -138,13 +138,9 @@ pub struct RayonThreadPool {
 
 impl ThreadPool for RayonThreadPool {
     fn new(threads: u32) -> Result<impl ThreadPool> {
-        let Ok(threadpool) = rayon::ThreadPoolBuilder::new()
+        let threadpool = rayon::ThreadPoolBuilder::new()
             .num_threads(threads as usize)
-            .build()
-        else {
-            return Err(KvError::Log);
-        };
-
+            .build()?;
         Ok(RayonThreadPool { threadpool })
     }
 

@@ -11,6 +11,8 @@ pub enum KvError {
     Logger(#[from] log::SetLoggerError),
     #[error("Sled error: {0}")]
     Sled(#[from] sled::Error),
+    #[error("Rayon threadpool error: {0}")]
+    Rayon(#[from] rayon::ThreadPoolBuildError),
     #[error("Str convert error: {0}")]
     Utf8(#[from] str::Utf8Error),
     #[error("Failed to write to or remove log")]

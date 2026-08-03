@@ -1,18 +1,22 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
+use kvs::protocol::{self, KvStream, StreamCommand};
 use kvs::thread_pool::{RayonThreadPool, SharedQueueThreadPool};
 use kvs::{
     KvCommand, KvStore, KvsClient, KvsServer, Result, SledKvsEngine, ThreadPool, error::KvError,
 };
 use rand::distr::{Alphanumeric, SampleString};
-use std::fs::{File, OpenOptions};
+use std::fs::{DirBuilder, File, OpenOptions};
+use std::hint::black_box;
 use std::io::{BufReader, BufWriter, Write};
-use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
+use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
+use std::sync::{Arc, Barrier, Mutex};
+use std::thread;
 
-const BENCH_LEN: usize = 1000;
+const BENCH_LEN: usize = 10;
 const BENCH_TOTAL: usize = 1000;
 const BENCH_PATH: &str = "./bench-data/";
-const BENCH_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 4000);
+const BENCH_ADDR: SocketAddr = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(127, 0, 0, 1)), 0);
 
 fn create_benchmark_data(path: impl Into<PathBuf>) -> Result<Vec<String>> {
     let mut path = path.into();
@@ -63,384 +67,74 @@ fn bench_kvs_shared_write(
     let path = path.into();
     let cpu_num = num_cpus::get() as f32;
     let cpu_num_ratio: Vec<f32> = vec![1. / 8., 1. / 4., 1. / 2., 1., 2., 4., 8.];
+    let client = KvsClient::new(RayonThreadPool::new(BENCH_TOTAL as u32)?)?;
     let data = create_benchmark_data(&path)?;
     let mut group = c.benchmark_group("write_group");
+    // let mut send_count = 0u64;
 
     for e in cpu_num_ratio {
-        group.bench_with_input(
-            BenchmarkId::new("kvs-shared-set-rm-set", e),
-            &(&path, &addr, &data),
-            |b, d| {
-                if cpu_num % e == 0.0 {
-                    let cpu_num = (cpu_num / e) as u32;
-                    let thread_pool_server = SharedQueueThreadPool::new(cpu_num).unwrap();
-                    let thread_pool_client =
-                        SharedQueueThreadPool::new(BENCH_TOTAL as u32).unwrap();
-                    let kvs =
-                        KvsServer::new(KvStore::open(d.0).unwrap(), thread_pool_server).unwrap();
-                    let client = KvsClient::new(thread_pool_client).unwrap();
+        if cpu_num % e == 0.0 {
+            let cpu_num = (cpu_num / e) as u32;
+            let mut path = path.clone();
+            path.push(e.to_string());
+            if !path.is_dir() {
+                DirBuilder::new().create(&path)?;
+            }
+            println!("CPU NUM: {cpu_num}");
+            let kvs = KvsServer::new(SledKvsEngine::open(&path)?, RayonThreadPool::new(cpu_num)?)?;
 
-                    b.iter(|| {
-                        let listener = TcpListener::bind(d.1).unwrap();
-                        assert!(kvs.work(listener).is_ok());
-                    });
+            if let Ok(listener) = TcpListener::bind(addr) {
+                let addr = listener.local_addr()?;
+                thread::spawn(move || {
+                    let _ = kvs.work(listener);
+                });
 
-                    d.2.iter().for_each(|e| {
-                        assert!(
-                            client
-                                .run(KvCommand::Set, e.clone(), Some(e.clone()), *d.1)
-                                .is_ok()
-                        );
-                    });
-                    d.2.iter().for_each(|e| {
-                        assert!(client.run(KvCommand::Rm, e.clone(), None, *d.1).is_ok());
-                    });
-                    d.2.iter().for_each(|e| {
-                        assert!(
-                            client
-                                .run(KvCommand::Set, e.clone(), Some(e.clone()), *d.1)
-                                .is_ok()
-                        );
-                    });
+                group.bench_with_input(
+                    BenchmarkId::new("kvs-shared-set-rm-set", e),
+                    &(&addr, &data),
+                    |b, d| {
+                        let barrier = Arc::new(Barrier::new(BENCH_TOTAL));
+                        rayon::scope(|_| {
+                            b.iter(|| {
+                                d.1.iter().for_each(|e| {
+                                    // send_count += 1;
+                                    // println!("Senddddd::: {send_count}");
+
+                                    let barrier = Arc::clone(&barrier);
+                                    assert!(
+                                        client
+                                            .run(
+                                                black_box(KvCommand::Set),
+                                                black_box(e.clone()),
+                                                black_box(Some(e.clone())),
+                                                black_box(*d.0),
+                                                Some(barrier),
+                                            )
+                                            .is_ok()
+                                    );
+                                });
+                            });
+                        });
+                    },
+                );
+
+                loop {
+                    let Ok(mut tcp_stream) = TcpStream::connect(addr) else {
+                        break;
+                    };
+                    tcp_stream.write_all(&protocol::create_protocol_stream(
+                        &KvStream::build_from(
+                            StreamCommand::Sd,
+                            String::from("019f2122-f67f-71b3-b541-1cc2d603a1fc"),
+                            None,
+                        ),
+                    )?)?;
+                    tcp_stream.write_all(b"\n")?;
                 }
-            },
-        );
-    }
+            }
 
-    group.finish();
-    Ok(())
-}
-
-fn bench_sled_shared_write(
-    c: &mut Criterion,
-    path: impl Into<PathBuf>,
-    addr: SocketAddr,
-) -> Result<()> {
-    let path = path.into();
-    let cpu_num = num_cpus::get() as f32;
-    let cpu_num_ratio: Vec<f32> = vec![1. / 8., 1. / 4., 1. / 2., 1., 2., 4., 8.];
-    let data = get_benchmark_data(&path)?;
-    let mut group = c.benchmark_group("write_group");
-
-    for e in cpu_num_ratio {
-        group.bench_with_input(
-            BenchmarkId::new("sled-shared-set-rm-set", e),
-            &(&path, &addr, &data),
-            |b, d| {
-                if cpu_num % e == 0.0 {
-                    let cpu_num = (cpu_num / e) as u32;
-                    let thread_pool_server = SharedQueueThreadPool::new(cpu_num).unwrap();
-                    let thread_pool_client =
-                        SharedQueueThreadPool::new(BENCH_TOTAL as u32).unwrap();
-                    let kvs = KvsServer::new(SledKvsEngine::open(d.0).unwrap(), thread_pool_server)
-                        .unwrap();
-                    let client = KvsClient::new(thread_pool_client).unwrap();
-
-                    b.iter(|| {
-                        let listener = TcpListener::bind(d.1).unwrap();
-                        assert!(kvs.work(listener).is_ok());
-                    });
-
-                    d.2.iter().for_each(|e| {
-                        assert!(
-                            client
-                                .run(KvCommand::Set, e.clone(), Some(e.clone()), *d.1)
-                                .is_ok()
-                        );
-                    });
-                    d.2.iter().for_each(|e| {
-                        assert!(client.run(KvCommand::Rm, e.clone(), None, *d.1).is_ok());
-                    });
-                    d.2.iter().for_each(|e| {
-                        assert!(
-                            client
-                                .run(KvCommand::Set, e.clone(), Some(e.clone()), *d.1)
-                                .is_ok()
-                        );
-                    });
-                }
-            },
-        );
-    }
-
-    group.finish();
-    Ok(())
-}
-
-fn bench_kvs_rayon_write(
-    c: &mut Criterion,
-    path: impl Into<PathBuf>,
-    addr: SocketAddr,
-) -> Result<()> {
-    let path = path.into();
-    let cpu_num = num_cpus::get() as f32;
-    let cpu_num_ratio: Vec<f32> = vec![1. / 8., 1. / 4., 1. / 2., 1., 2., 4., 8.];
-    let data = get_benchmark_data(&path)?;
-    let mut group = c.benchmark_group("write_group");
-
-    for e in cpu_num_ratio {
-        group.bench_with_input(
-            BenchmarkId::new("kvs-rayon-set-rm-set", e),
-            &(&path, &addr, &data),
-            |b, d| {
-                if cpu_num % e == 0.0 {
-                    let cpu_num = (cpu_num / e) as u32;
-                    let thread_pool_server = RayonThreadPool::new(cpu_num).unwrap();
-                    let thread_pool_client = RayonThreadPool::new(BENCH_TOTAL as u32).unwrap();
-                    let kvs =
-                        KvsServer::new(KvStore::open(d.0).unwrap(), thread_pool_server).unwrap();
-                    let client = KvsClient::new(thread_pool_client).unwrap();
-
-                    b.iter(|| {
-                        let listener = TcpListener::bind(d.1).unwrap();
-                        assert!(kvs.work(listener).is_ok());
-                    });
-
-                    d.2.iter().for_each(|e| {
-                        assert!(
-                            client
-                                .run(KvCommand::Set, e.clone(), Some(e.clone()), *d.1)
-                                .is_ok()
-                        );
-                    });
-                    d.2.iter().for_each(|e| {
-                        assert!(client.run(KvCommand::Rm, e.clone(), None, *d.1).is_ok());
-                    });
-                    d.2.iter().for_each(|e| {
-                        assert!(
-                            client
-                                .run(KvCommand::Set, e.clone(), Some(e.clone()), *d.1)
-                                .is_ok()
-                        );
-                    });
-                }
-            },
-        );
-    }
-
-    group.finish();
-    Ok(())
-}
-
-fn bench_sled_rayon_write(
-    c: &mut Criterion,
-    path: impl Into<PathBuf>,
-    addr: SocketAddr,
-) -> Result<()> {
-    let path = path.into();
-    let cpu_num = num_cpus::get() as f32;
-    let cpu_num_ratio: Vec<f32> = vec![1. / 8., 1. / 4., 1. / 2., 1., 2., 4., 8.];
-    let data = get_benchmark_data(&path)?;
-    let mut group = c.benchmark_group("write_group");
-
-    for e in cpu_num_ratio {
-        group.bench_with_input(
-            BenchmarkId::new("sled-rayon-set-rm-set", e),
-            &(&path, &addr, &data),
-            |b, d| {
-                if cpu_num % e == 0.0 {
-                    let cpu_num = (cpu_num / e) as u32;
-                    let thread_pool_server = RayonThreadPool::new(cpu_num).unwrap();
-                    let thread_pool_client = RayonThreadPool::new(BENCH_TOTAL as u32).unwrap();
-                    let kvs = KvsServer::new(SledKvsEngine::open(d.0).unwrap(), thread_pool_server)
-                        .unwrap();
-                    let client = KvsClient::new(thread_pool_client).unwrap();
-
-                    b.iter(|| {
-                        let listener = TcpListener::bind(d.1).unwrap();
-                        assert!(kvs.work(listener).is_ok());
-                    });
-
-                    d.2.iter().for_each(|e| {
-                        assert!(
-                            client
-                                .run(KvCommand::Set, e.clone(), Some(e.clone()), *d.1)
-                                .is_ok()
-                        );
-                    });
-                    d.2.iter().for_each(|e| {
-                        assert!(client.run(KvCommand::Rm, e.clone(), None, *d.1).is_ok());
-                    });
-                    d.2.iter().for_each(|e| {
-                        assert!(
-                            client
-                                .run(KvCommand::Set, e.clone(), Some(e.clone()), *d.1)
-                                .is_ok()
-                        );
-                    });
-                }
-            },
-        );
-    }
-
-    group.finish();
-    Ok(())
-}
-
-fn bench_kvs_shared_read(
-    c: &mut Criterion,
-    path: impl Into<PathBuf>,
-    addr: SocketAddr,
-) -> Result<()> {
-    let path = path.into();
-    let cpu_num = num_cpus::get() as f32;
-    let cpu_num_ratio: Vec<f32> = vec![1. / 8., 1. / 4., 1. / 2., 1., 2., 4., 8.];
-    let mut data = get_benchmark_data(&path)?;
-    let mut group = c.benchmark_group("write_group");
-    data.sort(); // Not read in write log order
-
-    for e in cpu_num_ratio {
-        group.bench_with_input(
-            BenchmarkId::new("kvs-shared-get-dequeue", e),
-            &(&path, &addr, &data),
-            |b, d| {
-                if cpu_num % e == 0.0 {
-                    let cpu_num = (cpu_num / e) as u32;
-                    let thread_pool_server = SharedQueueThreadPool::new(cpu_num).unwrap();
-                    let thread_pool_client =
-                        SharedQueueThreadPool::new(BENCH_TOTAL as u32).unwrap();
-                    let kvs =
-                        KvsServer::new(KvStore::open(d.0).unwrap(), thread_pool_server).unwrap();
-                    let client = KvsClient::new(thread_pool_client).unwrap();
-
-                    b.iter(|| {
-                        let listener = TcpListener::bind(d.1).unwrap();
-                        assert!(kvs.work(listener).is_ok());
-                    });
-
-                    d.2.iter().for_each(|e| {
-                        assert!(client.run(KvCommand::Get, e.clone(), None, *d.1).is_ok());
-                    });
-                }
-            },
-        );
-    }
-
-    group.finish();
-    Ok(())
-}
-
-fn bench_sled_shared_read(
-    c: &mut Criterion,
-    path: impl Into<PathBuf>,
-    addr: SocketAddr,
-) -> Result<()> {
-    let path = path.into();
-    let cpu_num = num_cpus::get() as f32;
-    let cpu_num_ratio: Vec<f32> = vec![1. / 8., 1. / 4., 1. / 2., 1., 2., 4., 8.];
-    let mut data = get_benchmark_data(&path)?;
-    let mut group = c.benchmark_group("write_group");
-    data.sort(); // Not read in write log order
-
-    for e in cpu_num_ratio {
-        group.bench_with_input(
-            BenchmarkId::new("sled-shared-get-dequeue", e),
-            &(&path, &addr, &data),
-            |b, d| {
-                if cpu_num % e == 0.0 {
-                    let cpu_num = (cpu_num / e) as u32;
-                    let thread_pool_server = SharedQueueThreadPool::new(cpu_num).unwrap();
-                    let thread_pool_client =
-                        SharedQueueThreadPool::new(BENCH_TOTAL as u32).unwrap();
-                    let kvs = KvsServer::new(SledKvsEngine::open(d.0).unwrap(), thread_pool_server)
-                        .unwrap();
-                    let client = KvsClient::new(thread_pool_client).unwrap();
-
-                    b.iter(|| {
-                        let listener = TcpListener::bind(d.1).unwrap();
-                        assert!(kvs.work(listener).is_ok());
-                    });
-
-                    d.2.iter().for_each(|e| {
-                        assert!(client.run(KvCommand::Get, e.clone(), None, *d.1).is_ok());
-                    });
-                }
-            },
-        );
-    }
-
-    group.finish();
-    Ok(())
-}
-
-fn bench_kvs_rayon_read(
-    c: &mut Criterion,
-    path: impl Into<PathBuf>,
-    addr: SocketAddr,
-) -> Result<()> {
-    let path = path.into();
-    let cpu_num = num_cpus::get() as f32;
-    let cpu_num_ratio: Vec<f32> = vec![1. / 8., 1. / 4., 1. / 2., 1., 2., 4., 8.];
-    let mut data = get_benchmark_data(&path)?;
-    let mut group = c.benchmark_group("write_group");
-    data.sort(); // Not read in write log order
-
-    for e in cpu_num_ratio {
-        group.bench_with_input(
-            BenchmarkId::new("kvs-rayon-get-dequeue", e),
-            &(&path, &addr, &data),
-            |b, d| {
-                if cpu_num % e == 0.0 {
-                    let cpu_num = (cpu_num / e) as u32;
-                    let thread_pool_server = RayonThreadPool::new(cpu_num).unwrap();
-                    let thread_pool_client = RayonThreadPool::new(BENCH_TOTAL as u32).unwrap();
-                    let kvs =
-                        KvsServer::new(KvStore::open(d.0).unwrap(), thread_pool_server).unwrap();
-                    let client = KvsClient::new(thread_pool_client).unwrap();
-
-                    b.iter(|| {
-                        let listener = TcpListener::bind(d.1).unwrap();
-                        assert!(kvs.work(listener).is_ok());
-                    });
-
-                    d.2.iter().for_each(|e| {
-                        assert!(client.run(KvCommand::Get, e.clone(), None, *d.1).is_ok());
-                    });
-                }
-            },
-        );
-    }
-
-    group.finish();
-    Ok(())
-}
-
-fn bench_sled_rayon_read(
-    c: &mut Criterion,
-    path: impl Into<PathBuf>,
-    addr: SocketAddr,
-) -> Result<()> {
-    let path = path.into();
-    let cpu_num = num_cpus::get() as f32;
-    let cpu_num_ratio: Vec<f32> = vec![1. / 8., 1. / 4., 1. / 2., 1., 2., 4., 8.];
-    let mut data = get_benchmark_data(&path)?;
-    let mut group = c.benchmark_group("write_group");
-    data.sort(); // Not read in write log order
-
-    for e in cpu_num_ratio {
-        group.bench_with_input(
-            BenchmarkId::new("sled-rayon-get-dequeue", e),
-            &(&path, &addr, &data),
-            |b, d| {
-                if cpu_num % e == 0.0 {
-                    let cpu_num = (cpu_num / e) as u32;
-                    let thread_pool_server = RayonThreadPool::new(cpu_num).unwrap();
-                    let thread_pool_client = RayonThreadPool::new(BENCH_TOTAL as u32).unwrap();
-                    let kvs = KvsServer::new(SledKvsEngine::open(d.0).unwrap(), thread_pool_server)
-                        .unwrap();
-                    let client = KvsClient::new(thread_pool_client).unwrap();
-
-                    b.iter(|| {
-                        let listener = TcpListener::bind(d.1).unwrap();
-                        assert!(kvs.work(listener).is_ok());
-                    });
-
-                    d.2.iter().for_each(|e| {
-                        assert!(client.run(KvCommand::Get, e.clone(), None, *d.1).is_ok());
-                    });
-                }
-            },
-        );
+            println!("Really exit::: {e}");
+        }
     }
 
     group.finish();
@@ -448,15 +142,9 @@ fn bench_sled_rayon_read(
 }
 
 fn group_benches(c: &mut Criterion) {
-    let _ = bench_kvs_shared_write(c, &BENCH_PATH, BENCH_ADDR);
-    let _ = bench_sled_shared_write(c, &BENCH_PATH, BENCH_ADDR);
-    let _ = bench_kvs_rayon_write(c, &BENCH_PATH, BENCH_ADDR);
-    let _ = bench_sled_rayon_write(c, &BENCH_PATH, BENCH_ADDR);
-
-    let _ = bench_kvs_shared_read(c, &BENCH_PATH, BENCH_ADDR);
-    let _ = bench_sled_shared_read(c, &BENCH_PATH, BENCH_ADDR);
-    let _ = bench_kvs_rayon_read(c, &BENCH_PATH, BENCH_ADDR);
-    let _ = bench_sled_rayon_read(c, &BENCH_PATH, BENCH_ADDR);
+    if let Err(e) = bench_kvs_shared_write(c, &BENCH_PATH, BENCH_ADDR) {
+        eprintln!("Benchmark error: {e}");
+    }
 }
 
 criterion_group!(benches, group_benches);

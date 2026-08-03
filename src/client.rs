@@ -1,4 +1,5 @@
 use crate::Result;
+use crate::error::KvError;
 use crate::kvs::KvCommand;
 use crate::protocol::{self, KvStream, StreamCommand};
 use crate::thread_pool::ThreadPool;
@@ -6,6 +7,7 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::SocketAddr;
 use std::net::TcpStream;
 use std::process;
+use std::sync::{Arc, Barrier};
 use std::thread::yield_now;
 
 const SHUTDOWN_SERVER_CMD: &str = "019f2122-f67f-71b3-b541-1cc2d603a1fc";
@@ -31,10 +33,14 @@ where
         key: String,
         value: Option<String>,
         address: SocketAddr,
+        barrier: Option<Arc<Barrier>>,
     ) -> Result<()> {
         self.thread.spawn(move || {
-            while let Err(e) = deal(command, key.clone(), value.clone(), address) {
-                eprintln!("Client error: {e}.");
+            if let Some(barrier) = barrier {
+                barrier.wait();
+            }
+            while let Err(_e) = deal(command, key.clone(), value.clone(), address) {
+                // eprintln!("Client error: {e}.");
                 yield_now();
             }
         });
@@ -70,8 +76,8 @@ fn deal(command: KvCommand, key: String, value: Option<String>, address: SocketA
     }?;
 
     let Ok(mut tcp_stream) = TcpStream::connect(address) else {
-        eprintln!("Connection error");
-        process::exit(1);
+        // eprintln!("Connection error");
+        return Err(KvError::Network);
     };
 
     // Send the request to the server

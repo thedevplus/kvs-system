@@ -42,5 +42,5 @@ fn main() -> Result<()> {
 
     let threads = SharedQueueThreadPool::new(1)?;
     let client = KvsClient::new(threads)?;
-    client.run(args.command, args.key, args.value, args.addr)
+    client.run(args.command, args.key, args.value, args.addr, None)
 }
