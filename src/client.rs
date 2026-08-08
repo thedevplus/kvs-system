@@ -7,10 +7,9 @@ use std::io::{BufRead, BufReader, Write};
 use std::net::SocketAddr;
 use std::net::TcpStream;
 use std::process;
-use std::sync::{Arc, Barrier};
+use std::sync::{Barrier, Weak};
 use std::thread::yield_now;
-
-const SHUTDOWN_SERVER_CMD: &str = "019f2122-f67f-71b3-b541-1cc2d603a1fc";
+use crate::config::{TRY_SEND, TRY_SEND_MAX, SHUTDOWN_SERVER_CMD};
 
 pub struct KvsClient<T>
 where
@@ -33,15 +32,25 @@ where
         key: String,
         value: Option<String>,
         address: SocketAddr,
-        barrier: Option<Arc<Barrier>>,
+        barrier: Option<Weak<Barrier>>,
     ) -> Result<()> {
         self.thread.spawn(move || {
-            if let Some(barrier) = barrier {
+            let mut try_send = TRY_SEND;
+            if let Some(barrier) = barrier
+                && let Some(barrier) = barrier.upgrade()
+            {
                 barrier.wait();
             }
-            while let Err(_e) = deal(command, key.clone(), value.clone(), address) {
-                // eprintln!("Client error: {e}.");
+            while let Err(KvError::Network) = deal(command, key.clone(), value.clone(), address) {
                 yield_now();
+
+                if try_send == 0 {
+                    continue;
+                } else if try_send < TRY_SEND_MAX {
+                    try_send += 1;
+                } else {
+                    break;
+                }
             }
         });
 
