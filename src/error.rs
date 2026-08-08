@@ -1,4 +1,3 @@
-use std::{io, str};
 use thiserror::Error;
 
 #[derive(Error, Debug)]
@@ -6,7 +5,7 @@ pub enum KvError {
     #[error("Serialization error: {0}")]
     Serde(#[from] serde_json::Error),
     #[error("I/O error: {0}")]
-    Io(#[from] io::Error),
+    Io(#[from] std::io::Error),
     #[error("Logger error: {0}")]
     Logger(#[from] log::SetLoggerError),
     #[error("Sled error: {0}")]
@@ -14,7 +13,7 @@ pub enum KvError {
     #[error("Rayon threadpool error: {0}")]
     Rayon(#[from] rayon::ThreadPoolBuildError),
     #[error("Str convert error: {0}")]
-    Utf8(#[from] str::Utf8Error),
+    Utf8(#[from] std::str::Utf8Error),
     #[error("Failed to write to or remove log")]
     Log,
     #[error("Failed to open file or get file path")]

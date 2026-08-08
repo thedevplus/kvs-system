@@ -24,17 +24,9 @@ use std::sync::atomic::Ordering::{Relaxed, SeqCst};
 use std::sync::{Arc, Mutex, RwLock};
 use std::thread::{self, JoinHandle};
 use std::time::Duration;
+use crate::config::{CMD_EXE_RATIO, LOG_FILE_EXT, LOG_FILE_SIZE, LOG_UNCOMPACT, LOG_UNCOMPACT_SLEEP};
 // use log::{LevelFilter, debug};
 // use std::time::SystemTime;
-
-/// File extension for log files
-const LOG_FILE_EXT: &str = "log";
-/// Maximum size per log file
-const LOG_FILE_SIZE: u64 = 1024 * 1024;
-/// Threshold for triggering compaction
-const LOG_UNCOMPACT: u64 = 1000;
-const CMD_EXE_RATIO: u64 = 2;
-const LOG_UNCOMPACT_SLEEP: u64 = LOG_UNCOMPACT * 1000;
 
 pub struct KvStore {
     path: Arc<RwLock<PathBuf>>,

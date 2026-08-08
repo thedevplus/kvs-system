@@ -8,6 +8,7 @@ pub mod protocol;
 pub mod server;
 pub mod sled;
 pub mod thread_pool;
+pub mod config;
 
 pub type Result<T> = std::result::Result<T, KvError>;
 

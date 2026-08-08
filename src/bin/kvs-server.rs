@@ -17,9 +17,7 @@ use log::{LevelFilter, debug};
 use std::net::{IpAddr, Ipv4Addr, SocketAddr, TcpListener};
 use std::path::PathBuf;
 use std::{fs, process};
-
-/// Directory name for storing log files
-const LOG_FILE_DIR: &str = "database";
+use kvs::config::LOG_FILE_DIR;
 
 /// The argument(s) for running
 #[derive(Parser)]
